@@ -1,107 +1,107 @@
-# Planning and Decomposition
+# 规划与分解
 
-Planning is the "System 2" component that allows agents to solve multi-stage problems without "wandering." Production agents have moved from simple "Chain-of-Thought" to **Recursive Decomposition** and **Tree Search**, with reasoning-native models (Claude Opus 5.5 and Fable 5.1, GPT-6 Astra and GPT-6.1 Sol) doing the heavy planning internally at whatever effort level you set.
+规划是允许智能体解决多阶段问题而不“迷路”的“系统 2”组件。生产智能体已从简单的“思维链”发展到**递归分解**和**树搜索**，推理原生模型（Claude Opus 5.5 和 Fable 5.1、GPT-6 Astra 和 GPT-6.1 Sol）在你设置的任何努力级别上进行繁重的内部规划。
 
-## Table of Contents
+## 目录
 
-- [The Planning Spectrum](#the-planning-spectrum)
-- [Static vs. Dynamic Planning](#static-vs-dynamic-planning)
-- [Clarify Before You Decompose](#clarify-before-you-decompose)
-- [Chain-of-Thought (CoT) and Reasoning Models](#cot-and-reasoning-models)
-- [Recursive Task Decomposition](#recursive-task-decomposition)
-- [Tree Search (MCTS) for Agent Paths](#tree-search-mcts)
-- [Interview Questions](#interview-questions)
-- [References](#references)
+- [规划谱系](#the-planning-spectrum)
+- [静态 vs. 动态规划](#static-vs-dynamic-planning)
+- [分解前先澄清](#clarify-before-you-decompose)
+- [思维链（CoT）与推理模型](#cot-and-reasoning-models)
+- [递归任务分解](#recursive-task-decomposition)
+- [树搜索（MCTS）](#tree-search-mcts)
+- [面试题](#interview-questions)
+- [参考文献](#references)
 
 ---
 
-## The Planning Spectrum
+## 规划谱系
 
-| Method | Strategy | Complexity | Best For |
+| 方法 | 策略 | 复杂度 | 最佳适用 |
 |--------|----------|------------|----------|
-| **Linear** | One step at a time | Low | Simple tools |
-| **Branching** | If-Then-Else logic | Medium | Conditional flows |
-| **Hierarchical** | Master-Plan -> Sub-Plans | High | Software engineering |
-| **Search-Based** | Try multiple paths internally | Max | Scientific Research |
+| **线性** | 一步一步来 | 低 | 简单工具 |
+| **分支** | If-Then-Else 逻辑 | 中 | 条件流 |
+| **分层** | 主计划 -> 子计划 | 高 | 软件工程 |
+| **基于搜索** | 内部尝试多条路径 | 最大 | 科学研究 |
 
 ---
 
-## Static vs. Dynamic Planning
+## 静态 vs. 动态规划
 
-### Static (Plan-and-Solve)
-The agent writes a 10-step plan and follows it strictly.
-- **Pros**: High performance, easy to parallelize.
-- **Cons**: Brittle. If step 2 fails, steps 3-10 are useless.
+### 静态（计划并解决）
+智能体写出一个 10 步计划并严格遵循。
+- **优点**：高性能，易于并行化。
+- **缺点**：脆弱。如果第 2 步失败，第 3-10 步就没用了。
 
-### Dynamic (Adaptive)
-The agent writes a plan, but **Re-evaluates** after every tool call.
-- **Best practice**: Use **Checkpointed Planning**. The agent is forced to "Commit" its progress to a state store after every major sub-goal to allow for recovery and "Backtracking" if the plan fails.
-
----
-
-## Clarify Before You Decompose
-
-The most expensive planning error is decomposing the wrong goal, and 2026 measurements say agents rarely ask. In Sierra's hyper-tau-bench (September 2026), where a developer agent must recover requirements from business records and a client interview and then build a customer-service agent, Claude Opus 5 working alone in Claude Code passed 23.9% of held-out tests, while the same class of model paired with an engineer who had deep context reached 82.2%. The developer agents opened fewer than 80 of roughly 1,700 available banking files and asked at most 4 client questions when the client alone held 20 to 25 requirements. One sentence of architecture advice doubled a telecom score from 31% to 67%. OSWorld 2.0's failure analysis names the same gap for desktop agents: missing information, because agents rarely ask to clarify.
-
-Design consequences:
-
-- **Make requirement elicitation an explicit plan step** with its own budget, not something the model may choose to skip.
-- **Ask only where the answer changes the plan.** OpenAI describes GPT-6 Astra in Codex as asking focused questions only for consequential decisions and continuing with work that does not depend on the answer. That is the right shape: a blocking question per fork, not a questionnaire.
-- **Feed in the architecture hint.** If a human knows the right shape, one sentence in the plan prompt is cheaper than any amount of agent exploration.
+### 动态（自适应）
+智能体写出一个计划，但每次工具调用后都会**重新评估**。
+- **最佳实践**：使用**检查点规划**。智能体被迫在每个主要子目标后将其进度“提交”到状态存储，以便在计划失败时允许恢复和“回溯”。
 
 ---
 
-## CoT and Reasoning Models
+## 分解前先澄清
 
-The model's internal "Thinking" window (Inference scaling) acts as a **Hidden Planner**.
-- Instead of using a separate "Planner LLM," we use a reasoning model (Claude Opus 5.5, GPT-6 Astra) to generate a "Mental Draft."
-- This draft is translated into a **Task DAG (Directed Acyclic Graph)** that the orchestrator executes.
-- **Effort is the planning budget.** Run the planning call at high effort and execution steps at low effort on the same model, rather than switching models. Pin effort explicitly: defaults change between versions (Opus 5.5 defaults to `medium`, Opus 5 defaulted to `high`).
+最昂贵的规划错误是分解了错误的目标，而 2026 年的测量显示智能体很少询问。在 Sierra 的 hyper-tau-bench（2026 年 9 月）中，开发者智能体必须从业务记录和客户访谈中恢复需求，然后构建客户服务智能体，Claude Opus 5 在 Claude Code 中独自工作时仅通过了 23.9% 的保留测试，而同一类模型在与拥有深层上下文的工程师配对时达到了 82.2%。开发者智能体仅打开了约 1700 个可用银行文件中的不到 80 个，最多问了 4 个客户问题，而仅客户就持有 20 到 25 个需求。一句架构建议将电信分数从 31% 翻倍到 67%。OSWorld 2.0 的故障分析为桌面智能体指出了同样的差距：信息缺失，因为智能体很少要求澄清。
 
----
+设计启示：
 
-## Recursive Task Decomposition
-
-For massive tasks (e.g., "Build a full-stack app"), we use **Sub-Agent Spawning**.
-1. **Master Agent**: Decomposes "Project" into "Frontend," "Backend," and "DB."
-2. **Sub-Agents**: Each receives a "Sub-Goal" and performs its own decomposition.
-3. **Consolidation**: The Master Agent merges the results.
-
-**Critical Nuance**: Each sub-agent is given a **Minimal Context** (only what it needs) to prevent token bloat and hallucination.
-
-**Bound the fan-out at the platform, not in the prompt.** Coordinator products now spawn subagents at scale (Cursor's Projects beta delegates to as many parallel subagents as a plan needs), so the cap has to live outside the model: OpenAI's Agents API exposes `max_concurrent_subagents` (default 6), and a total budget for the whole tree belongs at the gateway.
+- **让需求引出成为显式计划步骤**，并有自己的预算，不是模型可以选择跳过的内容。
+- **仅在答案会改变计划时提问。** OpenAI 描述 GPT-6 Astra 在 Codex 中仅对有影响的决策提出聚焦问题，并继续处理不依赖答案的工作。这是正确的形态：每个分支一个阻断性问题，而非问卷。
+- **输入架构提示。** 如果人类知道正确的形态，计划提示中的一句话比任何数量的智能体探索都便宜。
 
 ---
 
-## Tree Search (MCTS)
+## 思维链（CoT）与推理模型
 
-For high-stakes decisions, we use **Monte Carlo Tree Search (MCTS)** within the agent loop.
-- The agent "Simulates" 10 possible tool calls.
-- A **Reward Model** (or a separate LLM prompt) scores each simulation.
-- The agent follows the path with the highest reward.
-
----
-
-## Interview Questions
-
-### Q: How do you prevent an agent from "Infinite Recursion" during task decomposition?
-
-**Strong answer:**
-We implement **Decomposition Depth Limits** (usually 3 levels) and **Granularity Checks**. Before spawning a sub-agent, we ask the Supervisor model: "Is this task small enough to be solved by a single tool call?" If yes, we execute. If no, we decompose. We also use a **Global Controller** that tracks the total "Agent Count" to prevent a recursive bomb (fork bomb) that could drain the API budget. On a managed runtime I set the platform's own concurrency cap (for example `max_concurrent_subagents` in OpenAI's Agents API) and a session spend cap (Claude Managed Agents pauses with `budget_reached`), because a limit the model can talk itself past is not a limit.
-
-### Q: Why is "Plan Revision" often more expensive than "Plan Generation"?
-
-**Strong answer:**
-Plan generation is a "Fresh Start." Plan revision requires **Context Re-evaluation**: the model must understand what was *already done*, why the *previous step failed*, and how to fix it without undoing previous successes. This requires a much higher "Reasoning Density." In production, we spend more on the **Revision** step than on the initial plan: either a stronger model (e.g., Claude Opus 5.5 or GPT-6 Astra) or, more often now, the same model at a higher effort setting, which keeps the context and cache intact while buying more thinking.
+模型的内部“思考”窗口（推理扩展）充当**隐藏规划器**。
+- 我们不再使用单独的“规划器 LLM”，而是使用推理模型（Claude Opus 5.5、GPT-6 Astra）生成“思维草稿”。
+- 该草稿被转换为**任务 DAG（有向无环图）**，由编排器执行。
+- **努力是规划预算。** 在高努力下运行规划调用，在同一模型上以低努力执行步骤，而不是切换模型。显式固定努力：默认值在不同版本之间会改变（Opus 5.5 默认 `medium`，Opus 5 默认 `high`）。
 
 ---
 
-## References
-- Silver et al. "Mastering the game of Go with deep neural networks and tree search" (Nature, 2016), the origin of MCTS-plus-learned-value search applied to LLM agents
-- Wang et al. "Self-Consistency Improves Chain of Thought Reasoning in Language Models" (2022). https://arxiv.org/abs/2203.11171
-- LangGraph. "Multi-Agent Planning Patterns" (2025)
-- Sierra. "hyper-tau-bench: evaluating agents that build agents" (September 2026). https://sierra.ai/blog/hyper-t-bench-evaluating-agents-that-build-agents
+## 递归任务分解
+
+对于大型任务（例如，“构建全栈应用”），我们使用**子智能体生成**。
+1. **主智能体**：将“项目”分解为“前端”、“后端”和“数据库”。
+2. **子智能体**：每个接收一个“子目标”并执行自己的分解。
+3. **整合**：主智能体合并结果。
+
+**关键细节**：每个子智能体被给予**最小上下文**（仅其需要的内容），以防止令牌膨胀和幻觉。
+
+**在平台层面而非提示中限制扇出。** 协调器产品现在大规模生成子智能体（Cursor 的 Projects beta 根据需要委托给尽可能多的并行子智能体），因此上限必须位于模型外部：OpenAI 的 Agents API 公开 `max_concurrent_subagents`（默认 6），整个树的总体预算属于网关层。
 
 ---
 
-*Next: [Error Handling and Recovery](07-error-handling-and-recovery.md)*
+## 树搜索（MCTS）
+
+对于高风险决策，我们在智能体循环内使用**蒙特卡洛树搜索（MCTS）**。
+- 智能体“模拟”10 个可能的工具调用。
+- **奖励模型**（或单独的 LLM 提示）为每次模拟评分。
+- 智能体遵循奖励最高的路径。
+
+---
+
+## 面试题
+
+### Q: 如何防止智能体在任务分解期间出现“无限递归”？
+
+**优秀回答：**
+我们实施**分解深度限制**（通常 3 层）和**粒度检查**。在生成子智能体之前，我们问监管模型：“这个任务是否小到可以用单次工具调用解决？”如果是，我们执行。如果不是，我们分解。我们还使用**全局控制器**跟踪“智能体总数”以防止递归炸弹（fork bomb）耗尽 API 预算。在托管运行时上，我设置平台自己的并发上限（例如 OpenAI Agents API 中的 `max_concurrent_subagents`）和会话支出上限（Claude Managed Agents 在 `budget_reached` 时暂停），因为模型可以说服自己绕过的限制不是真正的限制。
+
+### Q: 为什么“计划修订”通常比“计划生成”更昂贵？
+
+**优秀回答：**
+计划生成是“重新开始”。计划修订需要**上下文重新评估**：模型必须理解*已经做了什么*、*上一步为什么失败*，以及如何在不撤销先前成功的情况下修复它。这需要高得多的“推理密度”。在生产中，我们在**修订**步骤上比在初始计划上花费更多：要么使用更强的模型（例如 Claude Opus 5.5 或 GPT-6 Astra），要么更常见的是，在同一模型上使用更高的努力设置，这保持上下文和缓存完整，同时获得更多思考。
+
+---
+
+## 参考文献
+- Silver 等。“用深度神经网络和树搜索精通围棋”（Nature，2016），应用于 LLM 智能体的 MCTS 加学习值搜索的起源
+- Wang 等。“自洽性改进语言模型中的思维链推理”（2022）。https://arxiv.org/abs/2203.11171
+- LangGraph。“多智能体规划模式”（2025）
+- Sierra。“hyper-tau-bench：评估构建智能体的智能体”（2026 年 9 月）。https://sierra.ai/blog/hyper-t-bench-evaluating-agents-that-build-agents
+
+---
+
+*下一篇：[错误处理与恢复](07-error-handling-and-recovery.md)*

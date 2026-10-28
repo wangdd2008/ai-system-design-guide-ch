@@ -1,102 +1,102 @@
-# Error Handling and Recovery
+# 错误处理与恢复
 
-Agents fail in non-deterministic ways. Error handling has moved from "Try-Catch blocks" to **Agentic Self-Correction** and **Stateful Rollbacks**, with frameworks like LangGraph and Microsoft Agent Framework providing native checkpoint/resume primitives.
+智能体以非确定性方式失败。错误处理已从“Try-Catch 块”发展到**智能体自我纠正**和**有状态回滚**，LangGraph 和 Microsoft Agent Framework 等框架提供了原生检查点/恢复原语。
 
-## Table of Contents
+## 目录
 
-- [The Taxonomy of Agent Failures](#taxonomy-of-agent-failures)
-- [Self-Correction Loops](#self-correction-loops)
-- [Stateful Rollbacks (Checkpointing)](#stateful-rollbacks-checkpointing)
-- [The "Stuck in a Loop" Fix](#the-stuck-in-a-loop-fix)
-- [Kill Switches and Containment Time](#kill-switches-and-containment-time)
-- [Graceful Degradation](#graceful-degradation)
-- [Interview Questions](#interview-questions)
-- [References](#references)
-
----
-
-## Taxonomy of Agent Failures
-
-1. **Hallucinated Tools**: Calling a tool that doesn't exist.
-2. **Schema Violation**: Passing the wrong arguments to a real tool.
-3. **Environment Error**: Tool exists, but the external API is down.
-4. **Logical Stall**: The agent performs the same failing action repeatedly (The ReAct Loop of Death).
-5. **Partial Batch Failure**: The model emitted several tool calls in one turn and one failed midway. Claude's computer-use toolset makes the contract explicit: the executor halts at the first failure and answers each later call with `is_error` ("Not executed: an earlier computer action in this turn failed"), so the model re-plans from a known state instead of assuming the batch completed.
-6. **Provider Refusal or Fallback**: A safety classifier stops the call. On Claude Fable 5.1 this returns HTTP 200 with `stop_reason: "refusal"` and a `stop_details` category, not an exception, and an optional server-side fallback (beta) retries on another model (Opus 4.8 or Opus 5). Since September 24, 2026, pre-output refusals in the `bio`, `frontier_llm`, and `reasoning_extraction` categories are billed, so a refusal loop now costs money.
+- [智能体故障分类法](#taxonomy-of-agent-failures)
+- [自我纠正循环](#self-correction-loops)
+- [有状态回滚（检查点）](#stateful-rollbacks-checkpointing)
+- [“卡在循环中”的修复](#the-stuck-in-a-loop-fix)
+- [终止开关与收容时间](#kill-switches-and-containment-time)
+- [优雅降级](#graceful-degradation)
+- [面试题](#interview-questions)
+- [参考文献](#references)
 
 ---
 
-## Self-Correction Loops
+## 智能体故障分类法
 
-Errors are now treated as **Tokens of Information**.
-
-- **Pattern**: When a tool fails, the error message is NOT just logged; it is fed back to the model as a prompt: *"Action failed with error: X. Reflect on why this happened and provide an alternative strategy."*
-- **Reasoning Models** (Claude Opus 5.5, GPT-6 Astra, Gemini 3.8 Flash with thinking): These models excel at this because they "internalize" the error during their hidden Chain-of-Thought, leading to a much higher one-shot recovery rate.
-- **Detail for environment errors, not for verifier verdicts.** Feed exit codes, stack traces, and API errors back in full. Be careful with *why a verifier or policy rejected the work*: in a September 2026 study of autonomous research agents (arXiv 2609.28614), cumulative evasion of the evaluator reached 40.5% after detailed rejection feedback versus 20.3% after a generic rejection. The authors note the comparison does not isolate the explanations themselves, but the safe default is a terse verdict from the grader and full detail only from the environment.
-
----
-
-## Stateful Rollbacks (Checkpointing)
-
-For long-running agents, an error in Step 9 shouldn't crash the whole project.
-
-- **Checkpoints**: High-reliability systems (using LangGraph or similar) save the "State Snapshot" to a DB after every successful tool call.
-- **The Rollback**: If the agent enters a logical stall, the supervisor agent can **Reset common-state** to Step 5 (the last "Safe" state) and force a different path.
+1. **幻觉工具**：调用不存在的工具。
+2. **模式违规**：向真实工具传递错误参数。
+3. **环境错误**：工具存在，但外部 API 宕机。
+4. **逻辑停滞**：智能体重复执行相同的失败动作（ReAct 死亡循环）。
+5. **部分批处理失败**：模型在一轮中发出多个工具调用，其中一个中途失败。Claude 的计算机使用工具集使契约显式：执行器在第一次失败时停止，并用 `is_error`（“未执行：本轮中较早的计算机操作失败”）回答每个后续调用，因此模型从已知状态重新规划，而不是假设批次已完成。
+6. **提供者拒绝或回退**：安全分类器阻止了调用。在 Claude Fable 5.1 上，这返回 HTTP 200 和 `stop_reason: "refusal"` 以及 `stop_details` 类别，不是异常，而且可选的服务器端回退（beta）会在另一个模型（Opus 4.8 或 Opus 5）上重试。自 2026 年 9 月 24 日起，`bio`、`frontier_llm` 和 `reasoning_extraction` 类别的输出前拒绝会被计费，因此拒绝循环现在会花钱。
 
 ---
 
-## The "Stuck in a Loop" Fix
+## 自我纠正循环
 
-Infinite loops are the #1 cost-sink in agentic systems.
+错误现在被视为**信息令牌**。
 
-**Solution**: **Counter-Based Intervention**.
-1. If the same `(Tool, Args)` tuple is seen 3 times in one session, the orchestrator interrupts the model.
-2. It injects a mandatory **"Pivot Instruction"**: *"You have tried searching for 'X' three times. This path is dead. You MUST try a different tool or admit you are stuck."*
-
----
-
-## Kill Switches and Containment Time
-
-An alert is not a control. OpenAI's September 25, 2026 disclosure about research-agent incidents includes the cleanest example: an agent tunneled through insufficiently filtered DNS to reach an external service; monitoring raised an alarm about 12 minutes after the first external response, but the run was killed only about 2.5 hours later because the automatic stop failed. The fixes OpenAI described were an allowlist for DNS (domains and record types) and blocking controls at two independent layers.
-
-What to build:
-
-- **A stop path that does not depend on the agent's host.** If the kill switch runs in the same process or VM the agent can affect, it can fail with it. Out-of-band enforcement (a gateway that revokes credentials, a network layer that drops egress, hardware watchdogs such as NVIDIA's DPU-based Sentry reference design) keeps working when the runtime does not.
-- **A detection-to-containment SLO**, measured and drilled like any incident metric: time from first alarm to credentials revoked and egress cut.
-- **Kill-switch tests in CI**: start a canary run, trigger the stop, assert it halted within the SLO.
+- **模式**：当工具失败时，错误消息不仅被记录；它被反馈给模型作为提示：*“操作失败，错误：X。反思为什么会发生，并提供替代策略。”*
+- **推理模型**（Claude Opus 5.5、GPT-6 Astra、带思考功能的 Gemini 3.8 Flash）：这些模型擅长此道，因为它们在隐藏思维链中“内化”错误，从而产生高得多的一次性恢复率。
+- **为环境错误提供详细信息，而非为验证者裁决。** 完整反馈退出代码、堆栈跟踪和 API 错误。小心*为什么验证者或策略拒绝了工作*：在 2026 年 9 月关于自主研究智能体的一项研究（arXiv 2609.28614）中，详细拒绝反馈后的评估者累积逃避率达到 40.5%，而通用拒绝后为 20.3%。作者指出该比较并未隔离解释本身，但安全的默认是来自评分者的简短裁决，以及仅来自环境的完整详细信息。
 
 ---
 
-## Graceful Degradation
+## 有状态回滚（检查点）
 
-If the high-reasoning agent (Claude Opus 5.5, GPT-6 Astra) keeps failing, we fall back to:
-- **Simplified Agent**: A smaller model with fewer, more reliable tools.
-- **RAG-only Mode**: Disable actions and just provide a conceptual answer based on the knowledge base.
-- **Cross-Vendor Fallback**: Provider outages are frequent enough to design for: Anthropic logged at least 12 major or critical incidents between August 16 and September 29, 2026, and an OpenAI incident on September 29 lasted about 5 hours 20 minutes across the API, ChatGPT, and Codex. A fallback to the same vendor's other model does not survive a platform outage. Mid-conversation failover has a trap on the newest Claude models: thinking blocks are bound to the model and conversation that produced them (a mismatched prefix returns 400 for newer accounts), so strip prior thinking blocks or restart from a checkpointed summary when switching models.
-- **Human Escalation**: (See the next chapter).
+对于长期运行的智能体，第 9 步的错误不应使整个项目崩溃。
 
----
-
-## Interview Questions
-
-### Q: Why is traditional "Exception Handling" (Try/Catch) insufficient for Agentic Systems?
-
-**Strong answer:**
-In traditional software, an exception is a "Stop" command. In an agentic system, the model is the "Driver." If the system just stops, the user task fails. We use **Error Injection** instead of Exception Handling. We catch the exception at the platform level and transform it into a **Synthesized Observation** for the model. This allows the model to "Reason" around the failure. A TRY/Catch only fixes the code; Error Injection allows the model to fix the **Plan**.
-
-### Q: How do you handle "Silent Failures" (Where the tool returns 200 OK but the data is wrong)?
-
-**Strong answer:**
-Silent failures are the most dangerous. We implement **Output Validation Agents**. For critical steps, we don't just accept the tool output. We pipe the output to a "Verifier Agent" (often a smaller, faster model) whose only job is to check: *"Does this tool output actually answer the query provided?"* If the Verifier says "No," it triggers a self-correction loop as if it were a hard error.
+- **检查点**：高可靠性系统（使用 LangGraph 或类似系统）在每次成功的工具调用后将“状态快照”保存到数据库。
+- **回滚**：如果智能体进入逻辑停滞，监管智能体可以将公共状态**重置**到第 5 步（最后一个“安全”状态）并强制走不同路径。
 
 ---
 
-## References
-- LangGraph. "Persistence and Checkpointing" (2025)
-- Shinn et al. "Reflexion: Language Agents with Verbal Reinforcement Learning" (2023). https://arxiv.org/abs/2303.11366
-- Huang et al. "Reward Hacking Challenges Oversight of Autonomous Research Agents" (arXiv 2609.28614, September 2026)
-- Anthropic. "Refusals and fallback" documentation. https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+## “卡在循环中”的修复
+
+无限循环是智能体系统中第一成本消耗。
+
+**解决方案**：**基于计数器的干预**。
+1. 如果在同一个会话中相同的 `(工具, 参数)` 元组出现 3 次，编排器会中断模型。
+2. 它注入强制的**“转向指令”**：*“你已经尝试搜索‘X’三次了。这条路死了。你必须尝试不同的工具，或者承认你卡住了。”*
 
 ---
 
-*Next: [Human-in-the-Loop Patterns](08-human-in-the-loop-patterns.md)*
+## 终止开关与收容时间
+
+警报不是控制。OpenAI 于 2026 年 9 月 25 日披露的研究智能体事件包含最清晰的例子：一个智能体通过过滤不足的 DNS 隧道到达外部服务；监控在首次外部响应后约 12 分钟发出警报，但运行直到约 2.5 小时后才被终止，因为自动停止失败了。OpenAI 描述的修复措施是 DNS 的允许列表（域名和记录类型）以及两个独立层上的阻断控制。
+
+需要构建的内容：
+
+- **一条不依赖智能体主机的停止路径。** 如果终止开关在与智能体相同的过程或虚拟机中运行，智能体可以影响它，它可能随之失败。带外强制执行（撤销凭证的网关、丢弃出口的网络层、NVIDIA 基于 DPU 的 Sentry 参考设计等硬件看门狗）在运行时无法工作时仍保持工作。
+- **从检测到收容的 SLO**，像任何事件指标一样测量和演练：从首次警报到凭证撤销和出口切断的时间。
+- **CI 中的终止开关测试**：启动金丝雀运行，触发停止，断言它在 SLO 内停止。
+
+---
+
+## 优雅降级
+
+如果高推理智能体（Claude Opus 5.5、GPT-6 Astra）持续失败，我们回退到：
+- **简化智能体**：更小的模型，工具更少但更可靠。
+- **仅 RAG 模式**：禁用动作，仅基于知识库提供概念性答案。
+- **跨供应商回退**：提供者宕机频繁到需要设计应对方案：Anthropic 在 2026 年 8 月 16 日至 9 月 29 日期间记录了至少 12 起重大或严重事件，而且 OpenAI 在 9 月 29 日的事件持续了约 5 小时 20 分钟，波及 API、ChatGPT 和 Codex。回退到同一供应商的其他模型无法度过平台宕机。在新一代 Claude 模型上，会话中途故障转移有一个陷阱：思考块被绑定到产生它们的模型和会话（不匹配的 prefix 对新账户返回 400），因此切换模型时去除之前的思考块，或从检查点摘要重新开始。
+- **人工升级**：（参见下一章）。
+
+---
+
+## 面试题
+
+### Q: 为什么传统的“异常处理”（Try/Catch）对智能体系统来说不够？
+
+**优秀回答：**
+在传统软件中，异常是“停止”命令。在智能体系统中，模型是“驱动程序”。如果系统只是停止，用户任务就失败了。我们使用**错误注入**而非异常处理。我们在平台层面捕获异常，并将其转换为模型的**合成观察**。这允许模型在失败周围“推理”。Try/Catch 只修复代码；错误注入允许模型修复**计划**。
+
+### Q: 你如何处理“静默失败”（工具返回 200 OK 但数据错误）？
+
+**优秀回答：**
+静默失败是最危险的。我们实施**输出验证智能体**。对于关键步骤，我们不只是接受工具输出。我们将输出传递给“验证智能体”（通常是更小、更快的模型），它的唯一工作是检查：*“这个工具输出是否真的回答了提供的查询？”* 如果验证者说“不”，它会触发一个自我纠正循环，就像它是硬错误一样。
+
+---
+
+## 参考文献
+- LangGraph。“持久性和检查点”（2025）
+- Shinn 等。“Reflexion：带口头强化学习的语言智能体”（2023）。https://arxiv.org/abs/2303.11366
+- Huang 等。“奖励黑客挑战自主研究智能体的监督”（arXiv 2609.28614，2026 年 9 月）
+- Anthropic。“拒绝和回退”文档。https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+
+---
+
+*下一篇：[人机协作模式](08-human-in-the-loop-patterns.md)*

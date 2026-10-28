@@ -1,104 +1,104 @@
-# Agent Fundamentals
+# 智能体基础
 
-Agents are LLM-powered systems that move beyond "chat" into "autonomous problem solving." The definition has shifted from simple ReAct loops to **Closed-Loop Reasoning Systems** that use built-in "System 2" thinking: adaptive thinking with an effort dial on Claude Opus 5.5 and Fable 5.1, five reasoning-effort levels (low to max) on GPT-6 Astra, and thinking levels on Gemini 3.8 Flash.
+智能体是由LLM驱动的系统，它们从"聊天"走向"自主解决问题"。其定义已从简单的ReAct循环演变为使用内置"系统2"思维的**闭环推理系统**：在Claude Opus 5.5和Fable 5.1上通过力度调节器进行自适应思考，在GPT-6 Astra上具有五个推理力度级别（从低到最大），在Gemini 3.8 Flash上具有思考级别。
 
-## Table of Contents
+## 目录
 
-- [The Agent Formula](#the-agent-formula)
-- [System 1 (LLM) vs. System 2 (Reasoning Model)](#system-1-vs-system-2-thinking)
-- [Agency Levels (Autonomous Spectrum)](#agency-levels)
-- [Core Components](#core-components)
-- [The Agent Lifecycle](#the-agent-lifecycle)
-- [Interview Questions](#interview-questions)
-- [References](#references)
-
----
-
-## The Agent Formula
-
-Modern agency is often described as:
-`Agent = Reasoning Model + Tool Use + Persistent Memory + Environment Feedback`
-
-**Nuance**: In 2023, agents were "wrappers" around chat models. Today, agents are increasingly **Integrated**. Frontier models (Claude Opus 5.5, GPT-6 Astra, Gemini 3.8 Flash) have the "Thinking" process trained in through reinforcement-learning post-training and interleave it between tool calls, making the agent loop more stable and less prone to "stalling."
+- [智能体公式](#the-agent-formula)
+- [系统1（LLM）与系统2（推理模型）](#system-1-vs-system-2-thinking)
+- [智能体层级（自主性谱系）](#agency-levels)
+- [核心组件](#core-components)
+- [智能体生命周期](#the-agent-lifecycle)
+- [面试问题](#interview-questions)
+- [参考资料](#references)
 
 ---
 
-## System 1 vs. System 2 Thinking
+## 智能体公式
 
-Architecting an agent requires choosing the right "Thinking Mode":
+现代智能体通常被描述为：
+`智能体 = 推理模型 + 工具使用 + 持久记忆 + 环境反馈`
 
-| Mode | Cognitive Type | Analogy | Current stack (October 2026) |
+**细微之处**：2023年，智能体只是聊天模型的"包装器"。如今，智能体正变得越来越**集成化**。前沿模型（Claude Opus 5.5、GPT-6 Astra、Gemini 3.8 Flash）通过强化学习后训练将"思考"过程内化，并在工具调用之间穿插进行，使智能体循环更稳定，更不容易"停滞"。
+
+---
+
+## 系统1与系统2思维
+
+构建智能体需要选择正确的"思考模式"：
+
+| 模式 | 认知类型 | 类比 | 当前技术栈（2026年10月） |
 |------|----------------|---------|---------------|
-| **System 1** | Fast, intuitive, reactive | Reflexes | Claude Haiku 4.5 / GPT-6 Luna / Gemini 3.8 Flash at `low` thinking |
-| **System 2** | Slow, logical, planning | Deliberation | Claude Opus 5.5 or Fable 5.1 at high effort / GPT-6 Astra or GPT-6.1 Sol at high effort or above |
+| **系统1** | 快速、直觉、反应式 | 反射 | Claude Haiku 4.5 / GPT-6 Luna / Gemini 3.8 Flash（`低`思考模式） |
+| **系统2** | 缓慢、逻辑、规划式 | 深思熟虑 | Claude Opus 5.5 或 Fable 5.1（高力度）/ GPT-6 Astra 或 GPT-6.1 Sol（高力度或更高） |
 
-**The Design Pattern**: Use System 1 models for "Fast UI" and "Routing." Use System 2 models for "Decision Gates" and "Complex Planning."
+**设计模式**：将系统1模型用于"快速UI"和"路由"。将系统2模型用于"决策关卡"和"复杂规划"。
 
-**The line is now a dial, not a model swap.** On the newest frontier models thinking cannot be fully switched off: Opus 5.5 rejects disabling it, Sonnet 5.5's lowest setting is `between_tools`, and GPT-6 Astra has no `none` effort. You set depth per call with the effort parameter, which means effort is part of your agent's configuration and must be pinned. Defaults move under you: Opus 5.5 defaults to `medium` effort where Opus 5 defaulted to `high`, so an unpinned migration silently changes latency and quality.
+**这条线现在是一个调节器，而不是模型切换。** 在最新的前沿模型上，思考无法完全关闭：Opus 5.5拒绝禁用，Sonnet 5.5的最低设置是`between_tools`，而GPT-6 Astra没有`none`力度。您通过力度参数设置每次调用的深度，这意味着力度是智能体配置的一部分，必须固定。默认设置会悄然变化：Opus 5.5默认`medium`力度，而Opus 5默认`high`，因此未固定的迁移会悄然改变延迟和质量。
 
-**Harness defaults move too, and they swap the model itself.** OpenAI Agents SDK 0.20.0 made `gpt-5.6-luna` its implicit default model, Codex CLI switched its default to GPT-6.1 Sol on September 29, and Claude Code moved its default Opus and Sonnet to the 5.5 models within days of each launch. Pin model IDs as well as effort, and re-run evals on every SDK or harness upgrade.
-
----
-
-## Agency Levels
-
-Not every autonomous system is an "Agent." We categorize them by the **Level of Agency**:
-
-1. **L0: Scripted Chains**: Fixed sequence (e.g., standard LangChain).
-2. **L1: Tool-Enabled**: Model picks a tool but doesn't plan.
-3. **L2: ReAct Agent**: Simple loop of "Thought -> Action -> Observation."
-4. **L3: Autonomous Planner**: Decomposes a goal into a graph of sub-tasks.
-5. **L4: Ambient Agent**: Runs in the background, intervenes only when necessary.
-
-L4 became a product category in September 2026: OpenAI's dots (announced September 29) run always-on on their own cloud computer and do only read-only research when idle, Meta's Muse runs in a dedicated cloud VM, and Microsoft's Copilot Autopilot (private preview) gets its own identity, memory, and computer inside the customer tenant. The design questions at L4 shift from "can it finish the task" to tenancy, agent identity, approval policy, and billing.
+**框架默认设置也在变化，而且它们会替换模型本身。** OpenAI Agents SDK 0.20.0将`gpt-5.6-luna`设为其隐式默认模型，Codex CLI在9月29日切换默认模型为GPT-6.1 Sol，而Claude Code在每次发布后几天内就将默认Opus和Sonnet切换到5.5模型。固定模型ID和力度，并在每次SDK或框架升级后重新运行评估。
 
 ---
 
-## Core Components
+## 智能体层级
 
-### 1. The Reasoning Model (The Executive)
-The CPU of the agent. It determines the "Path to Success."
+并非每个自主系统都是"智能体"。我们按**自主性层级**对它们进行分类：
 
-### 2. Tools (The Limbs)
-Interfaces (APIs, Browsers, DBs) that allow the agent to affect the world.
-> [!Note]
-> The **Model Context Protocol (MCP)** is now the industry standard for tool interoperability, with adoption from Anthropic, OpenAI, Google, Microsoft, and AWS. Governance moved to the Linux Foundation's Agentic AI Foundation in December 2025; the foundation has also hosted the A2A agent-to-agent protocol since August 2026.
+1. **L0：脚本链**：固定序列（例如，标准LangChain）。
+2. **L1：工具增强型**：模型选择工具但不规划。
+3. **L2：ReAct智能体**：简单的"思考 -> 行动 -> 观察"循环。
+4. **L3：自主规划器**：将目标分解为子任务图。
+5. **L4：环境智能体**：在后台运行，仅在必要时干预。
 
-### 3. Memory (The Experience)
-- **Short-term**: Context window (KV Cache).
-- **Long-term**: Vector DBs, persistent state (e.g., Mem0), or file-based memory (Letta's git-backed MemFS, Claude's memory tool).
+L4在2026年9月成为一个产品类别：OpenAI的dots（9月29日宣布）在自己的云计算机上始终运行，空闲时只做只读研究，Meta的Muse在专用云虚拟机中运行，而Microsoft的Copilot Autopilot（私人预览版）在客户租户内获得自己的身份、记忆和计算机。L4的设计问题从"它能完成任务吗"转变为租户、智能体身份、批准策略和计费。
 
 ---
 
-## The Agent Lifecycle
+## 核心组件
 
-1. **Intake**: Receive user goal.
-2. **Decomposition**: Break goal into sub-steps.
-3. **Execution**: Call tools and handle results.
-4. **Reflection**: Evaluate if the observation got the agent closer to the goal.
-5. **Completion**: Synthesize final proof for the user.
+### 1. 推理模型（执行层）
+智能体的CPU。它决定"通往成功的路径"。
 
----
+### 2. 工具（肢体）
+允许智能体影响世界的接口（API、浏览器、数据库）。
+> [!注意]
+> **模型上下文协议（MCP）** 现在是工具互操作性的行业标准，已被Anthropic、OpenAI、Google、Microsoft和AWS采用。管理权于2025年12月移交给Linux Foundation的Agentic AI Foundation；该基金会自2026年8月起还托管了A2A智能体到智能体协议。
 
-## Interview Questions
-
-### Q: Why is a "Reasoning Model" (like Claude Opus 5.5 or GPT-6 Astra) better for agency than a standard LLM?
-
-**Strong answer:**
-Standard LLMs (System 1) predict the *very next token* based on pattern matching. When they encounter an error in a tool call, they often hallucinate a fix instead of admitting the failure. Reasoning Models use **Chain-of-Thought (CoT)** during inference, and the current generation thinks between tool calls, not only before the first one. For an agent, this means higher **Path Reliability**: the model is less likely to enter an infinite loop or retry the same failing action because it reasons about the failure before choosing the next step. It is not a substitute for harness guards. Reasoning models still loop, so the harness keeps repetition detectors and budgets regardless (see [Loop Engineering](12-loop-engineering.md)).
-
-### Q: How do you prevent "Agentic Drift" in long-running tasks?
-
-**Strong answer:**
-Agentic Drift occurs when the sub-steps take the agent so far from the original goal that it loses context. The standard solution is **Goal Anchoring**: include the "Original Objective" as a pinned system message and use a **Secondary Observer Model** (a smaller, cheaper model) to score every agent action against the original objective. If the score drops below a threshold, the agent is forced to "re-plan" from the root.
+### 3. 记忆（经验）
+- **短期记忆**：上下文窗口（KV缓存）。
+- **长期记忆**：向量数据库、持久状态（例如Mem0）或基于文件的记忆（Letta的git支持MemFS、Claude的记忆工具）。
 
 ---
 
-## References
-- Kahneman, D. "Thinking, Fast and Slow" (2011), the source of the System 1 / System 2 framing
-- OpenAI. "Learning to Reason with LLMs" (2024)
-- DeepSeek-AI. "DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning" (2025)
+## 智能体生命周期
+
+1. **接收**：接收用户目标。
+2. **分解**：将目标分解为子步骤。
+3. **执行**：调用工具并处理结果。
+4. **反思**：评估观察结果是否使智能体更接近目标。
+5. **完成**：为用户综合最终证明。
 
 ---
 
-*Next: [Reasoning Loops: ReAct and Beyond](02-reasoning-loops-react-and-beyond.md)*
+## 面试问题
+
+### 问：为什么"推理模型"（如Claude Opus 5.5或GPT-6 Astra）比标准LLM更适合智能体？
+
+**优秀回答：**
+标准LLM（系统1）基于模式匹配预测*下一个token*。当它们在工具调用中遇到错误时，往往会幻觉一个修复方案，而不是承认失败。推理模型在推理过程中使用**思维链（CoT）**，而且当前这一代在工具调用之间也会思考，而不仅仅在第一次之前。对于智能体来说，这意味着更高的**路径可靠性**：模型不太可能进入无限循环或重试相同的失败操作，因为它在选择下一步之前会思考失败的原因。它不能替代框架守卫。推理模型仍然会循环，因此框架需要保持重复检测器和预算（参见[循环工程](12-loop-engineering.md)）。
+
+### 问：如何防止长时程任务中的"智能体漂移"？
+
+**优秀回答：**
+智能体漂移发生在子步骤使智能体远离原始目标以至于失去上下文时。标准解决方案是**目标锚定**：将"原始目标"作为固定系统消息，并使用**次要观察模型**（一个更小、更便宜的模型）对每个智能体操作相对于原始目标进行评分。如果分数低于阈值，智能体被迫从根部"重新规划"。
+
+---
+
+## 参考资料
+- Kahneman, D. 《思考，快与慢》（2011），系统1/系统2框架的来源
+- OpenAI. "使用LLM学习推理"（2024）
+- DeepSeek-AI. "DeepSeek-R1：通过强化学习激励LLM的推理能力"（2025）
+
+---
+
+*下一篇：[推理循环：ReAct及更远](02-reasoning-loops-react-and-beyond.md)*

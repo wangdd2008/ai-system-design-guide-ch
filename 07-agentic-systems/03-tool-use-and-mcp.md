@@ -1,595 +1,595 @@
-# Tool Use and MCP
+# 工具使用与MCP
 
-Tools are the "hands" of an agent. The industry has standardized on the **Model Context Protocol (MCP)**, which replaces fragmented custom tool definitions with one communication layer that runs locally over stdio or remotely over Streamable HTTP. Streamable HTTP and OAuth 2.1 authorization arrived in the 2025 spec revisions (commentary often calls this "MCP 2.0", but no spec release carries that name, and the SDK 2.x majors of July 2026 are a separate numbering), and the **2026-07-28 revision** rebuilt the protocol core as stateless, the largest overhaul since MCP launched (see [the stateless rewrite](#mcp-2026-07-28-the-stateless-rewrite) below). In parallel, **Agent-to-Agent (A2A)** complements MCP's tool-access layer with agent coordination, and since August 2026 both protocols sit under the same Linux Foundation umbrella, the Agentic AI Foundation.
+工具是智能体的"双手"。行业已标准化为**模型上下文协议（MCP）**，它用单一通信层替代了碎片化的自定义工具定义，该层可在本地通过stdio或远程通过Streamable HTTP运行。Streamable HTTP和OAuth 2.1授权在2025年规范修订中引入（评论通常称其为"MCP 2.0"，但没有规范版本携带该名称，2026年7月的SDK 2.x主要版本是独立的编号），而**2026-07-28修订版**将协议核心重建为无状态，这是MCP自推出以来最大的 overhaul（参见下面的[无状态重写](#mcp-2026-07-28-the-stateless-rewrite)）。与此同时，**智能体到智能体（A2A）**补充了MCP的工具访问层与智能体协调，自2026年8月起，两个协议都隶属于同一个Linux Foundation伞下组织——Agentic AI Foundation。
 
-## Table of Contents
+## 目录
 
-- [The Tool-Use Mechanism](#the-tool-use-mechanism)
-- [Model Context Protocol (MCP)](#model-context-protocol-mcp)
-- [Defining High-Precision Tools](#defining-high-precision-tools)
-- [MCP vs. OpenAI Function Calling](#mcp-vs-openai-function-calling)
-- [Streaming Tool Calls](#streaming-tool-calls)
-- [The 2025 Revisions: Streamable HTTP and Auth](#the-2025-revisions-streamable-http-and-auth)
-- [MCP 2026-07-28: The Stateless Rewrite](#mcp-2026-07-28-the-stateless-rewrite)
-- [MCP Extensions and Ecosystem (October 2026)](#mcp-extensions-and-ecosystem-october-2026)
-- [Agent Plugins](#agent-plugins)
-- [Agent-to-Agent Protocol (A2A)](#agent-to-agent-protocol-a2a)
-- [The Protocol Landscape: Tools, Agents, and Payments](#the-protocol-landscape-tools-agents-and-payments)
-- [A2A v1.0 and MCP in Production](#a2a-v10-and-mcp-in-production)
-- [Computer-Use Tools (Anthropic)](#computer-use-tools-anthropic)
-- [Context7: Live Documentation MCP](#context7-live-documentation-mcp)
-- [Interview Questions](#interview-questions)
-- [References](#references)
-
----
-
-## The Tool-Use Mechanism
-
-Tool use occurs in a 3-step cycle:
-1. **Schema Presentation**: The model is given a JSON schema of the tools.
-2. **Intent & Extraction**: The model outputs a "Call" (e.g., `{"tool": "get_weather", "args": {"city": "Tokyo"}}`).
-3. **Execution & Contextualization**: The system runs the function and feeds the result back into the prompt.
-
-**Nuance**: Production stacks no longer "hardcode" tool definitions into the system prompt. They use **Dynamic Manifests** that fetch only necessary tools based on the user's intent.
-
-Three provider-side changes in 2026 matter for harness code:
-
-- **Forced tool use is gone on the newest Claude models.** Fable 5.1, Mythos 5.1, Opus 5.5, and Sonnet 5.5 return HTTP 400 for `tool_choice` of `any` or `tool`; only `auto` and `none` remain. The old "force a tool call to get JSON" extraction pattern must move to `auto` plus strict tool use, or to structured outputs.
-- **Tools can change mid-conversation without losing the cache.** Anthropic's `inline-tools-2026-09-15` beta (September 22) defines, replaces, or removes tools inside a mid-conversation system message without invalidating the prompt cache, and can pin a fetched MCP tool list in an `mcp_tool_listing` block so a server cannot swap definitions mid-session.
-- **Tool calling on GPT-6 Astra requires the Responses API**, and Astra drops `temperature`, `top_p`, and logprobs, so harnesses that tuned sampling or read logprobs for tool routing need another mechanism.
+- [工具使用机制](#the-tool-use-mechanism)
+- [模型上下文协议（MCP）](#model-context-protocol-mcp)
+- [定义高精度工具](#defining-high-precision-tools)
+- [MCP与OpenAI函数调用](#mcp-vs-openai-function-calling)
+- [流式工具调用](#streaming-tool-calls)
+- [2025年修订：Streamable HTTP和认证](#the-2025-revisions-streamable-http-and-auth)
+- [MCP 2026-07-28：无状态重写](#mcp-2026-07-28-the-stateless-rewrite)
+- [MCP扩展与生态系统（2026年10月）](#mcp-extensions-and-ecosystem-october-2026)
+- [智能体插件](#agent-plugins)
+- [智能体到智能体协议（A2A）](#agent-to-agent-protocol-a2a)
+- [协议全景：工具、智能体和支付](#the-protocol-landscape-tools-agents-and-payments)
+- [A2A v1.0和MCP生产环境](#a2a-v10-and-mcp-in-production)
+- [计算机使用工具（Anthropic）](#computer-use-tools-anthropic)
+- [Context7：实时代档MCP](#context7-live-documentation-mcp)
+- [面试问题](#interview-questions)
+- [参考资料](#references)
 
 ---
 
-## Model Context Protocol (MCP)
+## 工具使用机制
 
-Developed by Anthropic (released November 2024) and now the universal tool-integration standard across Anthropic, OpenAI, Google, Microsoft, and AWS, MCP allows models to interact with data and tools regardless of where they live. Governance moved to the Linux Foundation's Agentic AI Foundation in December 2025.
+工具使用发生在3步循环中：
+1. **模式呈现**：模型被提供工具的JSON模式。
+2. **意图与提取**：模型输出一个"调用"（例如，`{"tool": "get_weather", "args": {"city": "Tokyo"}}`）。
+3. **执行与语境化**：系统运行函数并将结果反馈到提示中。
 
-- **MCP Client**: The AI application (e.g., your agent code).
-- **MCP Server**: A standalone process that exposes Tools (Functions), Resources (Data), and Prompts (Templates).
-- **Communication**: Uses JSON-RPC over stdio (local) or Streamable HTTP (remote).
+**细微之处**：生产堆栈不再将工具定义"硬编码"到系统提示中。它们使用**动态清单**，仅根据用户意图获取必要的工具。
 
-### Why MCP?
-- **Security**: Tools run in their own process, not in the model logic.
-- **Portability**: Write a "Postgres Tool" once, use it in Claude, GPT, or Llama.
-- **Discoverability**: Standardized `tools/list`, `resources/read`, and `prompts/list` methods, plus the `server/discover` RPC that the 2026-07-28 revision made mandatory.
+2026年三个影响框架代码的供应商端变化：
+
+- **强制工具使用在最新的Claude模型上已消失。** Fable 5.1、Mythos 5.1、Opus 5.5和Sonnet 5.5对`tool_choice`为`any`或`tool`返回HTTP 400；只剩下`auto`和`none`。旧的"强制工具调用以获取JSON"的提取模式必须改为`auto`加严格工具使用，或结构化输出。
+- **工具可以在对话中途更改而不会丢失缓存。** Anthropic的`inline-tools-2026-09-15`测试版（9月22日）允许在对话中途的系统消息内定义、替换或移除工具，而不会使提示缓存失效，并且可以在`mcp_tool_listing`块中固定获取的MCP工具列表，因此服务器无法在会话中途交换定义。
+- **在GPT-6 Astra上的工具调用需要Responses API**，而且Astra放弃了`temperature`、`top_p`和logprobs，因此调整了采样或读取logprobs进行工具路由的框架需要另一种机制。
 
 ---
 
-## Defining High-Precision Tools
+## 模型上下文协议（MCP）
 
-A production-quality tool must include:
+由Anthropic开发（2024年11月发布），现在是Anthropic、OpenAI、Google、Microsoft和AWS之间通用的工具集成标准，MCP允许模型与数据和工具交互，无论它们位于何处。管理权于2025年12月移交给Linux Foundation的Agentic AI Foundation。
 
-1. **Strict Type Validation**: Use Pydantic or Zod to enforce schemas before the call executes, and turn on the provider's strict tool mode so arguments are constrained to the schema at generation time.
-2. **Detailed Docstrings**: Describe *when NOT* to use the tool.
-3. **Confidence Thresholds**: Require the model to output a `confidence` score for the tool call. Treat it as a routing hint, not a calibrated probability.
-4. **Deliberate, Model-Visible Errors**: Since MCP Python SDK 2.1.0, an unexpected exception in a handler is logged and the client sees only `Error executing tool <name>`; raise `ToolError` for messages the model should act on. That default is right (stack traces leak internals), but it means actionable errors must be designed, not leaked.
+- **MCP客户端**：AI应用程序（例如，您的智能体代码）。
+- **MCP服务器**：一个独立进程，暴露工具（函数）、资源（数据）和提示（模板）。
+- **通信**：使用stdio（本地）或Streamable HTTP（远程）上的JSON-RPC。
+
+### 为什么选择MCP？
+- **安全性**：工具在它们自己的进程中运行，而不是在模型逻辑中。
+- **可移植性**：编写一次"Postgres工具"，在Claude、GPT或Llama中使用。
+- **可发现性**：标准化的`tools/list`、`resources/read`和`prompts/list`方法，以及2026-07-28修订版强制要求的`server/discover` RPC。
+
+---
+
+## 定义高精度工具
+
+生产级工具必须包括：
+
+1. **严格类型验证**：使用Pydantic或Zod在执行调用之前强制执行模式，并打开供应商的严格工具模式，使参数在生成时受模式约束。
+2. **详细文档字符串**：描述*何时不*使用该工具。
+3. **置信度阈值**：要求模型输出工具调用的`confidence`分数。将其视为路由提示，而不是校准概率。
+4. **有意图的、模型可见的错误**：自MCP Python SDK 2.1.0起，处理程序中的意外异常被记录，客户端只看到`Error executing tool <name>`；为模型应该采取行动的消息引发`ToolError`。该默认是正确的（堆栈跟踪会泄露内部信息），但这意味着可操作的错误必须被设计，而不是被泄露。
 
 ```python
-# MCP Python SDK 2.x: `pip install mcp` now resolves to 2.x, and FastMCP was renamed MCPServer.
-# Projects not ready to migrate should pin mcp<2 (v1 receives security and critical fixes only).
+# MCP Python SDK 2.x: `pip install mcp`现在解析到2.x，FastMCP被重命名为MCPServer。
+# 尚未准备好迁移的项目应该固定mcp<2（v1仅接收安全和关键修复）。
 from mcp.server import MCPServer
 
 mcp = MCPServer("analytics")
 
 @mcp.tool()
 def execute_sql(query: str) -> list[dict]:
-    """Run ONE read-only SELECT against the analytics replica.
-    Do NOT use for DDL or writes: DROP, DELETE, and UPDATE are rejected
-    by the database role, not just by this docstring."""
-    ...  # parameterize, enforce a row limit, run under a read-only role
+    """对分析副本运行一个只读的SELECT。
+    不要用于DDL或写入：DROP、DELETE和UPDATE会被
+    数据库角色拒绝，而不仅仅是这个文档字符串。"""
+    ...  # 参数化，强制执行行限制，在只读角色下运行
 ```
 
 ---
 
-## MCP vs. OpenAI Function Calling
+## MCP与OpenAI函数调用
 
-| Feature | OpenAI Native | MCP |
+| 特性 | OpenAI原生 | MCP |
 |---------|---------------|-----|
-| **Coupling** | High (OpenAI specific) | Low (Agnostic) |
-| **Transport** | JSON in API body | JSON-RPC (Local/Remote) |
-| **Data Access**| No native data "Resource" | Native `Resources` support |
-| **Best For** | Prototyping | Enterprise Orchestration |
+| **耦合度** | 高（OpenAI特定） | 低（无关） |
+| **传输** | API主体中的JSON | JSON-RPC（本地/远程） |
+| **数据访问** | 没有原生数据"资源" | 原生`Resources`支持 |
+| **最适合** | 原型设计 | 企业编排 |
 
-The comparison is less either/or than the table suggests. OpenAI's Responses API, its Agents SDK, and the managed Agents API (public beta September 10, 2026) all consume remote MCP servers, so function calling is the wire format inside a provider API and MCP is how the tool is packaged, secured, and reached.
-
----
-
-## Streaming Tool Calls
-
-Frontier models support **Partial Tool Speculation**.
-Instead of waiting for the full JSON to generate, the system starts "prefetching" tool results as soon as the tool name and critical IDs are visible in the stream. This reduces perceived latency by **400-800ms**.
+这种比较不像表格暗示的那样非此即彼。OpenAI的Responses API、其Agents SDK和托管Agents API（2026年9月10日公测版）都使用远程MCP服务器，因此函数调用是供应商API内部的线格式，而MCP是工具如何打包、保护和访问的方式。
 
 ---
 
-## The 2025 Revisions: Streamable HTTP and Auth
+## 流式工具调用
 
-MCP spec revisions are dated, not numbered: 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, and 2026-07-28 (current). The **2025-03-26** revision (March 2025) introduced the two changes that made remote MCP practical, and the 2025-06-18 revision hardened the auth model into the shape used today. "MCP 2.0 ratified in March 2026" is a common misdating of the same changes, one year late.
+前沿模型支持**部分工具推测**。
+系统不再等待完整JSON生成，而是在流中看到工具名称和关键ID时立即开始"预取"工具结果。这将感知到的延迟减少**400-800毫秒**。
 
-### 1. Streamable HTTP Transport
-Launch-era MCP used stdio locally or HTTP with a separate Server-Sent Events channel remotely. **Streamable HTTP** replaced HTTP+SSE with a single endpoint: the client POSTs JSON-RPC messages to it, and the server answers with a plain JSON response, or with an SSE stream when it needs to send several messages.
+---
+
+## 2025年修订：Streamable HTTP和认证
+
+MCP规范修订是日期标记的，不是编号的：2024-11-05、2025-03-26、2025-06-18、2025-11-25和2026-07-28（当前）。**2025-03-26**修订版（2025年3月）引入了使远程MCP实用的两项更改，而2025-06-18修订版将认证模型硬化为今天使用的形状。"MCP 2.0于2026年3月批准"是对相同更改的常见误标，晚了一年。
+
+### 1. Streamable HTTP传输
+启动时代的MCP在本地使用stdio，或远程使用带有单独Server-Sent Events通道的HTTP。**Streamable HTTP**用单一端点替代了HTTP+SSE：客户端向它POST JSON-RPC消息，服务器用普通JSON响应回答，或在需要发送多条消息时用SSE流回答。
 
 ```
-[MCP Client] ──── POST /mcp (JSON-RPC) ────→ [MCP Server]
-             ←─── JSON response, or an SSE stream ───
+[MCP客户端] ──── POST /mcp (JSON-RPC) ────→ [MCP服务器]
+             ←─── JSON响应，或SSE流 ───
 ```
 
-- Enables MCP servers deployed as cloud microservices (not just local processes)
-- stdio remains the local transport; HTTP+SSE has been deprecated since 2025-03-26, and the 2026-07-28 revision moved it onto the spec's formal deprecation track
+- 使MCP服务器能够作为云微服务部署（不仅仅是本地进程）
+- stdio仍然是本地传输；HTTP+SSE自2025-03-26起已被弃用，2026-07-28修订版将其移至规范的正式弃用轨道
 
-### 2. OAuth 2.1 Authorization
-Remote MCP servers can require OAuth 2.1 with PKCE. Since 2025-06-18 the MCP server is an OAuth **resource server**: it advertises its authorization server through Protected Resource Metadata (RFC 9728), and clients must send the RFC 8707 `resource` parameter so every token is audience-bound to one server. A request without a token gets a challenge that tells the client where to start:
+### 2. OAuth 2.1授权
+远程MCP服务器可以要求OAuth 2.1和PKCE。自2025-06-18起，MCP服务器是一个OAuth**资源服务器**：它通过受保护资源元数据（RFC 9728）广告其授权服务器，客户端必须发送RFC 8707 `resource`参数，因此每个令牌都受限于一个服务器的受众。没有令牌的请求会收到一个挑战，告诉客户端从哪里开始：
 
 ```http
-HTTP/1.1 401 Unauthorized
+HTTP/1.1 401 未授权
 WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource",
                          scope="files:read"
 ```
 
-This enables enterprise MCP servers with fine-grained, per-server access control. The 2025-11-25 revision added Client ID Metadata Documents as a recommended registration mechanism and incremental scope consent, where a server answers HTTP 403 `insufficient_scope` with the scope it needs (step-up). The 2026-07-28 revision then deprecated Dynamic Client Registration in favor of those metadata documents and made clients validate the RFC 9207 `iss` parameter when the authorization server sends it, both covered below.
+这使企业MCP服务器具有细粒度的、按服务器的访问控制。2025-11-25修订版增加了客户端ID元数据文档作为推荐的注册机制，以及增量范围同意，服务器用HTTP 403 `insufficient_scope`回答，附带它需要的范围（升级）。2026-07-28修订版随后弃用了动态客户端注册，转而支持这些元数据文档，并使客户端在授权服务器发送时验证RFC 9207 `iss`参数，两者都在下面涵盖。
 
 ---
 
-## MCP 2026-07-28: The Stateless Rewrite
+## MCP 2026-07-28：无状态重写
 
-On July 28, 2026 the MCP project finalized spec revision **2026-07-28**, the largest protocol overhaul since MCP launched, after a ten-week release-candidate freeze. The headline: **the protocol core is now stateless**. The `initialize` handshake and the `Mcp-Session-Id` header are gone; every request carries the protocol version and client capabilities in `_meta`, and servers identify themselves in result `_meta`. Cross-call state moves into explicit server-minted handles passed as ordinary tool arguments. The practical consequence is that a remote MCP server can now run as a horizontally scaled deployment behind a plain round-robin load balancer with zero shared session state, which previously required sticky sessions or a shared session store.
+2026年7月28日，MCP项目最终确定了规范修订版**2026-07-28**，这是MCP自推出以来最大的协议全面修订，经过十周的发布候选冻结。头条新闻是：**协议核心现在是无状态的**。`initialize`握手和`Mcp-Session-Id`头部已消失；每个请求在`_meta`中携带协议版本和客户端能力，服务器在结果`_meta`中识别自己。跨调用状态转移到作为普通工具参数传递的显式服务器铸造句柄中。实际结果是，远程MCP服务器现在可以作为水平扩展的部署在普通轮询负载均衡器后面运行，零共享会话状态，这以前需要粘性会话或共享会话存储。
 
-### How MCP Got Here
+### MCP如何到达这里
 
 ```mermaid
 flowchart LR
-    A[Nov 2024<br>MCP launches<br>stdio + HTTP SSE] --> B[2025 revisions<br>Streamable HTTP, OAuth 2.1,<br>elicitation]
-    B --> C[Jan 26, 2026<br>MCP Apps ships as<br>first official extension]
-    C --> D[Jun 18, 2026<br>Enterprise-Managed<br>Authorization stable]
-    D --> E[Jul 28, 2026<br>Stateless core<br>MRTR, extensions framework]
-    E --> F[Aug to Sep 2026<br>New roadmap,<br>Skills extension Final]
+    A[2024年11月<br>MCP启动<br>stdio + HTTP SSE] --> B[2025年修订版<br>Streamable HTTP, OAuth 2.1,<br>elicitation]
+    B --> C[2026年1月26日<br>MCP Apps作为<br>第一个官方扩展发布]
+    C --> D[2026年6月18日<br>企业托管<br>授权稳定]
+    D --> E[2026年7月28日<br>无状态核心<br>MRTR, 扩展框架]
+    E --> F[2026年8月至9月<br>新路线图,<br>技能扩展最终版]
 ```
 
-### Three Generations of MCP, Compared
+### MCP的三代比较
 
-| Dimension | Launch (Nov 2024) | Streamable HTTP era (2025 revisions) | 2026-07-28 revision |
+| 维度 | 启动（2024年11月） | Streamable HTTP时代（2025年修订版） | 2026-07-28修订版 |
 |-----------|-------------------|--------------------------------------|---------------------|
-| **Session model** | Stateful `initialize` handshake | Stateful, `Mcp-Session-Id` over Streamable HTTP | Stateless; version and capabilities ride in `_meta` on every request |
-| **Transport** | stdio, HTTP+SSE | Adds Streamable HTTP | Streamable HTTP with mandatory `Mcp-Method` / `Mcp-Name` routing headers; HTTP+SSE formally deprecated |
-| **Server-initiated requests** | Sampling, roots (server push) | Adds elicitation | Removed; replaced by Multi Round-Trip Requests (client retries with state) |
-| **Mid-call user input** | None | `elicitation/create` push | `input_required` result + client retry with `requestState` |
-| **Long-running work** | None | Experimental | Tasks official extension (poll-based handles) |
-| **Server-rendered UI** | None | MCP Apps ships as an extension (Jan 2026) | MCP Apps folded into the formal extensions framework |
-| **Auth** | None standardized | OAuth 2.1 + PKCE, Dynamic Client Registration; CIMD and step-up scope consent added in 2025-11-25 | OAuth hardened: RFC 9207 `iss` validation, issuer-bound credentials, CIMD replaces DCR; EMA extension for enterprise IdPs |
-| **List caching** | None | None | Required `ttlMs` + `cacheScope` on list and read results; deterministic tool ordering for prompt-cache hits |
-| **Stream recovery** | None | SSE `Last-Event-ID` resumability | Removed; clients re-issue the request, durable work uses Tasks |
-| **Horizontal scaling** | Single process | Sticky sessions behind a load balancer | Any instance serves any request; no shared state |
+| **会话模型** | 有状态`initialize`握手 | 有状态，`Mcp-Session-Id`通过Streamable HTTP | 无状态；版本和能力在每次请求的`_meta`中携带 |
+| **传输** | stdio, HTTP+SSE | 增加Streamable HTTP | 强制`Mcp-Method`/`Mcp-Name`路由头部的Streamable HTTP；HTTP+SSE正式弃用 |
+| **服务器发起的请求** | 采样、根（服务器推送） | 增加elicitation | 已移除；由多轮往返请求替代（客户端带状态重试） |
+| **通话中用户输入** | 无 | `elicitation/create`推送 | `input_required`结果+客户端用`requestState`重试 |
+| **长时间运行的工作** | 无 | 实验性 | 任务官方扩展（基于轮询的句柄） |
+| **服务器渲染UI** | 无 | MCP Apps作为扩展发布（2026年1月） | MCP Apps并入正式扩展框架 |
+| **认证** | 无标准化 | OAuth 2.1 + PKCE, 动态客户端注册；CIMD和升级范围同意在2025-11-25中增加 | OAuth加固：RFC 9207 `iss`验证、发行人绑定凭证、CIMD替代DCR；EMA扩展用于企业IdP |
+| **列表缓存** | 无 | 无 | 列表和读取结果需要`ttlMs`+`cacheScope`；确定性工具排序以命中提示缓存 |
+| **流恢复** | 无 | SSE `Last-Event-ID`可恢复性 | 已移除；客户端重新发出请求，持久工作使用任务 |
+| **水平扩展** | 单进程 | 负载均衡器后的粘性会话 | 任何实例服务任何请求；无共享状态 |
 
-### Multi Round-Trip Requests (MRTR)
+### 多轮往返请求（MRTR）
 
-The server-initiated request pattern (`elicitation/create`, `sampling/createMessage`, `roots/list`) is removed. When a server needs mid-call user input, it returns a result with `resultType: "input_required"`, an `inputRequests` array, and an opaque `requestState` blob; the client collects the input and retries the original request with `inputResponses` attached. Because the state rides in the retry, any server instance behind the load balancer can resume the interrupted call. This is what makes human-in-the-loop approval gates compatible with stateless horizontal scaling.
+服务器发起的请求模式（`elicitation/create`、`sampling/createMessage`、`roots/list`）已被移除。当服务器需要通话中用户输入时，它返回一个带有`resultType: "input_required"`、`inputRequests`数组和不透明`requestState`块的结果；客户端收集输入并用附带的`inputResponses`重试原始请求。因为状态在重试中携带，负载均衡器后面的任何服务器实例都可以恢复中断的调用。这就是人机协同批准门与无状态水平扩展兼容的原因。
 
 ```mermaid
 sequenceDiagram
-    participant C as MCP Client
-    participant LB as Load balancer
-    participant S1 as Server instance 1
-    participant S2 as Server instance 2
+    participant C as MCP客户端
+    participant LB as 负载均衡器
+    participant S1 as 服务器实例1
+    participant S2 as 服务器实例2
 
     C->>LB: tools/call archive_records
-    LB->>S1: route to any instance
+    LB->>S1: 路由到任何实例
     S1-->>C: resultType input_required + requestState
-    Note over C: Client collects user approval
-    C->>LB: retry tools/call with inputResponses + requestState
-    LB->>S2: a different instance is fine
+    Note over C: 客户端收集用户批准
+    C->>LB: 用inputResponses + requestState重试tools/call
+    LB->>S2: 不同的实例也可以
     S2-->>C: resultType complete
 ```
 
-All results now carry a required `resultType` field (`complete` or `input_required`; extensions such as Tasks add further values); results from older servers that lack it are treated as `complete`.
+所有结果现在携带必需的`resultType`字段（`complete`或`input_required`；任务等扩展添加更多值）；来自缺少该字段的旧服务器的结果被视为`complete`。
 
-### What Is Deprecated or Removed
+### 什么已被弃用或移除
 
-The revision also adopts a formal feature lifecycle (Active, Deprecated, Removed) with a minimum twelve-month deprecation window and a public deprecated-features registry. For features newly deprecated in this revision (Roots, Sampling, Logging, DCR) the earliest removal is July 28, 2027; HTTP+SSE, deprecated back in March 2025, runs on an earlier clock.
+该修订版还采用了正式的功能生命周期（活跃、已弃用、已移除），最低十二个月的弃用窗口和公开的弃用功能注册表。对于此修订版中新弃用的功能（根、采样、日志记录、DCR），最早移除日期为2027年7月28日；早在2025年3月就被弃用的HTTP+SSE运行在更早的时钟上。
 
-| Feature | Status in 2026-07-28 | Migrate to |
+| 功能 | 2026-07-28中的状态 | 迁移到 |
 |---------|----------------------|------------|
-| `initialize` handshake, `Mcp-Session-Id` | Removed | Version and capabilities in `_meta` per request; `server/discover` RPC for probing |
-| `elicitation/create`, `sampling/createMessage`, `roots/list` | Removed | Multi Round-Trip Requests |
-| SSE stream resumability (`Last-Event-ID`) | Removed | Re-issue the request; Tasks extension for durable work |
-| Roots | Deprecated | Pass directories via tool parameters, resource URIs, or server config |
-| Sampling | Deprecated | Call the LLM provider API directly |
-| Logging | Deprecated | stderr (stdio) or OpenTelemetry |
-| HTTP+SSE transport | Formally deprecated | Streamable HTTP |
-| Dynamic Client Registration (RFC 7591) | Deprecated | Client ID Metadata Documents (client ID is a URL hosting the client's metadata) |
+| `initialize`握手, `Mcp-Session-Id` | 已移除 | 每次请求的`_meta`中的版本和能力；用于探测的`server/discover` RPC |
+| `elicitation/create`, `sampling/createMessage`, `roots/list` | 已移除 | 多轮往返请求 |
+| SSE流可恢复性（`Last-Event-ID`） | 已移除 | 重新发出请求；持久工作的任务扩展 |
+| 根 | 已弃用 | 通过工具参数、资源URI或服务器配置传递目录 |
+| 采样 | 已弃用 | 直接调用LLM供应商API |
+| 日志记录 | 已弃用 | stderr（stdio）或OpenTelemetry |
+| HTTP+SSE传输 | 正式弃用 | Streamable HTTP |
+| 动态客户端注册（RFC 7591） | 已弃用 | 客户端ID元数据文档（客户端ID是托管客户端元数据的URL） |
 
-The RPC mechanisms (`elicitation/create`, `sampling/createMessage`, `roots/list`) are removed from the core protocol while the features they served are deprecated with migration paths, which is why both kinds of rows appear above.
+RPC机制（`elicitation/create`、`sampling/createMessage`、`roots/list`）已从核心协议中移除，而它们服务的功能被弃用并带有迁移路径，这就是为什么上面出现两种类型的行。
 
-Two smaller but design-relevant transport changes: `Mcp-Method` and `Mcp-Name` HTTP headers are now mandatory on Streamable HTTP POSTs, so load balancers, gateways, and WAFs can route and filter MCP traffic without parsing JSON-RPC bodies; and list results (`tools/list`, `prompts/list`, `resources/list`) must declare `ttlMs` and `cacheScope`, giving clients a principled answer to caching tool catalogs.
+两个较小但设计相关的传输变化：`Mcp-Method`和`Mcp-Name` HTTP头部现在在Streamable HTTP POST上是强制的，因此负载均衡器、网关和WAF可以在不解析JSON-RPC主体的情况下路由和过滤MCP流量；而且列表结果（`tools/list`、`prompts/list`、`resources/list`）必须声明`ttlMs`和`cacheScope`，为缓存工具目录给客户端一个原则性的答案。
 
-### The Extensions Framework
+### 扩展框架
 
-The core is now deliberately small; everything else is an **extension**, identified by reverse-DNS ID, versioned independently of the core spec, and governed through an Extensions Track in the SEP process. The official extensions include:
+核心现在故意保持小巧；其他一切都是**扩展**，通过反向DNS ID识别，独立于核心规范进行版本控制，并通过SEP过程中的扩展轨道进行管理。官方扩展包括：
 
-| Extension | Status | What it does |
+| 扩展 | 状态 | 功能 |
 |-----------|--------|--------------|
-| **Tasks** (`io.modelcontextprotocol/tasks`) | Official; redesigned poll-based lifecycle, contributed by AWS | A tool call can answer with a task handle; the client polls `tasks/get`, pushes mid-task input with `tasks/update`, cancels with `tasks/cancel`. The standard answer for work that outlives a request. |
-| **MCP Apps** | Official since January 26, 2026 | A tool declares a `ui://` template; the host renders it in a sandboxed iframe (no DOM access, deny-by-default CSP), UI-to-host communication is postMessage-carried JSON-RPC, and UI-triggered actions go through the same tool-call consent path. Rendered by Claude, ChatGPT, VS Code, Goose, and Microsoft 365 Copilot, among others. |
-| **Enterprise-Managed Authorization (EMA)** | Stable since June 18, 2026 | An organization provisions MCP server access centrally through its IdP: an OIDC or SAML assertion is exchanged (RFC 8693) for an ID-JAG, which a JWT bearer grant (RFC 7523) trades for an MCP access token, with no per-user consent screens. Okta is the first supported IdP; Claude and VS Code shipped support at launch. The ID-JAG grant itself is still an IETF OAuth working-group Internet-Draft (-04), not an RFC, so expect wire-level changes. |
+| **任务** (`io.modelcontextprotocol/tasks`) | 官方；重新设计基于轮询的生命周期，由AWS贡献 | 工具调用可以用任务句柄回答；客户端轮询`tasks/get`，用`tasks/update`推送任务中输入，用`tasks/cancel`取消。对于超出请求寿命的工作的标准答案。 |
+| **MCP Apps** | 自2026年1月26日起官方 | 工具声明一个`ui://`模板；主机在沙箱iframe中渲染它（无DOM访问，默认拒绝CSP），UI到主机的通信是通过postMessage携带的JSON-RPC，UI触发的操作通过相同的工具调用同意路径。由Claude、ChatGPT、VS Code、Goose和Microsoft 365 Copilot等渲染。 |
+| **企业托管授权（EMA）** | 自2026年6月18日起稳定 | 组织通过其IdP集中配置MCP服务器访问：交换OIDC或SAML断言（RFC 8693）以获取ID-JAG，JWT承载授权（RFC 7523）将其交易为MCP访问令牌，无需每用户同意屏幕。Okta是第一个支持的IdP；Claude和VS Code在发布时即支持。ID-JAG授权本身仍然是IETF OAuth工作组的互联网草案（-04），不是RFC，因此预期会有线路级变化。 |
 
-### Migration Checklist
+### 迁移检查清单
 
-- Remove `initialize` / session-ID logic; send version and capabilities in `_meta`, and implement the `server/discover` RPC (now a MUST).
-- Convert elicitation and sampling flows to MRTR: return `input_required` with `requestState`, accept retries with `inputResponses`.
-- Move any cross-call state into explicit handles passed as tool arguments, or adopt the Tasks extension.
-- Emit `Mcp-Method` / `Mcp-Name` headers, declare `ttlMs` / `cacheScope` on list results, and return tools in deterministic order.
-- Plan the auth migration from DCR to Client ID Metadata Documents; validate `iss` per RFC 9207 and never reuse client credentials across issuers.
-- Budget real work: the maintainers themselves warn that custom implementations face significant uplift.
+- 移除`initialize`/会话ID逻辑；在`_meta`中发送版本和能力，并实现`server/discover` RPC（现在是必须的）。
+- 将elicitation和采样流转换为MRTR：返回`input_required`并附带`requestState`，接受带有`inputResponses`的重试。
+- 将任何跨调用状态转移到作为工具参数传递的显式句柄中，或采用任务扩展。
+- 发出`Mcp-Method`/`Mcp-Name`头部，在列表结果上声明`ttlMs`/`cacheScope`，并按确定性顺序返回工具。
+- 规划从DCR到客户端ID元数据文档的认证迁移；按RFC 9207验证`iss`，并且永远不要跨发行人重用客户端凭证。
+- 预算实际工作：维护者自己警告自定义实现面临显著的升级工作。
 
-Sources: modelcontextprotocol.io/specification/2026-07-28/changelog, blog.modelcontextprotocol.io
+来源：modelcontextprotocol.io/specification/2026-07-28/changelog, blog.modelcontextprotocol.io
 
 ---
 
-## MCP Extensions and Ecosystem (October 2026)
+## MCP扩展与生态系统（2026年10月）
 
-The roadmap items this chapter tracked through May 2026 have largely shipped. Status as of October 2026:
+本章跟踪到2026年5月的路线图项目已基本发货。截至2026年10月的状态：
 
-| Roadmap item (May 2026 framing) | Status (October 2026) |
+| 路线图项目（2026年5月框架） | 状态（2026年10月） |
 |---------------------------------|--------------------|
-| Transport scalability / stateless core | **Shipped** in the 2026-07-28 revision (see [the stateless rewrite](#mcp-2026-07-28-the-stateless-rewrite)). The August 22 roadmap goes further: Streamable HTTP as the single binding, spoken over stdin/stdout for local servers too |
-| MCP Apps (server-rendered UIs) | **Shipped** January 26, 2026 as the first official extension; rendered by Claude, ChatGPT, VS Code, Goose, and Microsoft 365 Copilot, among others. The Apps SDK moved onto the v2 TypeScript packages in ext-apps 2.0.0 (September 8) with the wire protocol unchanged, so 2.x Views run in 1.x hosts and 2.x hosts render 1.x Views: SDK-level breaks without wire breaks, which is what the extensions framework was designed for |
-| Tasks extension (long-running work) | **Shipped** as `io.modelcontextprotocol/tasks` in the 2026-07-28 revision, redesigned around poll-based task handles, but the extension repository still carries only pre-release tags (v0.2.0 to v0.2.2, September 23 to 30), so treat the interface as settling. The August 22 roadmap targets Tasks (SEP-2663) for eventual inclusion in the core protocol, after a composition review so tasks, subscriptions, and progress notifications share one lifecycle, cancellation model, and error surface |
-| Enterprise authentication | **Shipped** June 18, 2026 as the Enterprise-Managed Authorization extension (Okta first IdP; Claude and VS Code at launch). Next is agent identity: DPoP sender-constrained tokens (SEP-1932) and Workload Identity Federation (SEP-1933) are still open drafts, though the TypeScript client 2.1.0 already ships DPoP |
-| MCP Server Cards (pre-connection discovery) | Still experimental (SEP-2127, under review). Cards are now served at `GET <streamable-http-url>/server-card`, and clients find them through an entry in the domain's AI Catalog at `/.well-known/ai-catalog.json`, a cross-protocol index maintained by the Agent Card Working Group under the Linux Foundation that also lists A2A agent cards and Claude Code plugins. Distinct from the core `server/discover` RPC |
-| MCP Registry | Still in preview (`registry.modelcontextprotocol.io`), API frozen at v0.1; GA timing unannounced. Release v1.8.1 (August 6) fixed a GitHub Pages organization-namespace takeover |
-| Skills over MCP (new) | **Final** September 13, 2026 as the `io.modelcontextprotocol/skills` extension (SEP-2640); see below |
+| 传输可扩展性/无状态核心 | **已发货** 在2026-07-28修订版中（参见[无状态重写](#mcp-2026-07-28-the-stateless-rewrite)）。8月22日路线图更进一步：Streamable HTTP作为单一绑定，通过stdin/stdout为本地服务器服务 |
+| MCP Apps（服务器渲染UI） | **已发货** 2026年1月26日作为第一个官方扩展；由Claude、ChatGPT、VS Code、Goose和Microsoft 365 Copilot等渲染。Apps SDK在ext-apps 2.0.0（9月8日）中移至v2 TypeScript包，线路协议未变，因此2.x视图在1.x主机中运行，2.x主机渲染1.x视图：SDK级破坏而不破坏线路，这正是扩展框架的设计目的 |
+| 任务扩展（长时间运行的工作） | **已发货** 作为`io.modelcontextprotocol/tasks`在2026-07-28修订版中，围绕基于轮询的任务句柄重新设计，但扩展仓库仍只有预发布标签（v0.2.0到v0.2.2，9月23日至30日），因此将界面视为稳定中。8月22日路线图目标将任务（SEP-2663）最终纳入核心协议，在组合审查之后，使任务、订阅和进度通知共享一个生命周期、取消模型和错误表面 |
+| 企业认证 | **已发货** 2026年6月18日作为企业托管授权扩展（Okta第一个IdP；Claude和VS Code在发布时）。下一个是智能体身份：DPoP发送者约束令牌（SEP-1932）和工作负载身份联邦（SEP-1933）仍然是开放草案，尽管TypeScript客户端2.1.0已经发货DPoP |
+| MCP服务器卡片（连接前发现） | 仍然是实验性的（SEP-2127，审查中）。卡片现在通过`GET <streamable-http-url>/server-card`服务，客户端通过域名AI目录中的条目找到它们，位于`/.well-known/ai-catalog.json`，这是由Linux Foundation下的Agent Card工作组维护的跨协议索引，还列出了A2A智能体卡片和Claude Code插件。与核心`server/discover` RPC不同 |
+| MCP注册表 | 仍在预览中（`registry.modelcontextprotocol.io`），API冻结在v0.1；GA时间未宣布。v1.8.1版本（8月6日）修复了GitHub Pages组织命名空间接管 |
+| 通过MCP的技能（新） | **最终版** 2026年9月13日作为`io.modelcontextprotocol/skills`扩展（SEP-2640）；参见下文 |
 
-**Discovery now has two layers worth keeping straight:** pre-connection discovery through a domain's AI Catalog pointing at server cards (experimental; feeds registries, crawlers, and allowlisting) versus the in-protocol `server/discover` RPC (mandatory core since 2026-07-28; feeds version negotiation). Because the same catalog document indexes MCP servers and A2A agents, an enterprise platform can allowlist remote capabilities of both kinds from one place, but present it as direction, not standard.
+**发现现在有两个层次值得保持清晰：** 通过域名的AI目录指向服务器卡片的连接前发现（实验性；供给注册表、爬虫和允许列表）与协议内的`server/discover` RPC（自2026-07-28起强制核心；供给版本协商）。因为同一个目录文档索引MCP服务器和A2A智能体，企业平台可以从一个地方允许列表两种类型的远程能力，但将其作为方向呈现，而不是标准。
 
-### What the August 22 Roadmap Prioritizes
+### 8月22日路线图优先事项
 
-The core maintainers published a 6-to-12-month roadmap on August 22, 2026, with expedited SEP review for five areas. No date was given for the next spec revision.
+核心维护者在2026年8月22日发布了一份6至12个月的路线图，对五个领域进行加速SEP审查。未给出下一个规范修订版的日期。
 
-| Priority area | What it means for builders |
+| 优先领域 | 对构建者的意义 |
 |---------------|----------------------------|
-| **Agentic messaging primitives** | Server-initiated events and webhooks (Triggers and Events WG); Tasks, subscriptions, and progress notifications converge on one lifecycle |
-| **HTTP-native transport** | One binding (Streamable HTTP) everywhere, including over stdio for local servers; caching extended from `ttlMs` / `cacheScope` to ETags, including versioned tool-call results |
-| **Agent identity and enterprise security** | An Agent Identity WG (forming) to finalize DPoP and a delegated identity model built on workload identity federation, ID-JAG, and RFC 8693 token exchange, coordinated with the IETF OAuth and WIMSE groups; attesting whether a human is present (interactive client vs headless agent) is under discussion |
-| **Improved primitives** | Redesign the `tools/call` result shape (returning both `content` and `structuredContent` produced diverging implementations); an experimental server-side progressive discovery mechanism for large tool catalogs |
-| **SDK developer experience** | A formal extension contract; an experiment that generates a Tier 1 SDK and quickstarts from the spec and conformance suite |
+| **智能体消息原语** | 服务器发起的事件和Webhook（触发器和事件WG）；任务、订阅和进度通知收敛于一个生命周期 |
+| **HTTP原生传输** | 到处一个绑定（Streamable HTTP），包括通过stdio为本地服务器服务；缓存从`ttlMs`/`cacheScope`扩展到ETags，包括版本化的工具调用结果 |
+| **智能体身份和企业安全** | 一个智能体身份WG（组建中）来最终确定DPoP和基于工作负载身份联邦、ID-JAG和RFC 8693令牌交换的委托身份模型，与IETF OAuth和WIMSE组协调；证明人类是否存在（交互式客户端 vs 无头智能体）正在讨论中 |
+| **改进的原语** | 重新设计`tools/call`结果形状（返回`content`和`structuredContent`产生分歧的实现）；大型工具目录的实验性服务器端渐进发现机制 |
+| **SDK开发者体验** | 正式扩展合同；一个从规范和一致性套件生成Tier 1 SDK和快速入门的实验 |
 
-The two forward-looking interview questions this sets up: how a headless agent with its own identity reaches an MCP server, and how you serve a 2,000-tool catalog without blowing the context window.
+这设定的两个前瞻性面试问题：具有自己身份的无头智能体如何到达MCP服务器，以及如何在不超过上下文窗口的情况下提供2,000个工具的目录。
 
-### Skills over MCP
+### 通过MCP的技能
 
-Agent Skills (`SKILL.md` folders) left beta on the Claude API on August 19, 2026, and the MCP skills extension (Final September 13) lets a server publish skills next to the tools they describe instead of copying them into a filesystem or plugin. Servers that declare it implement `skills/list` and `skills/get`, and skill files are read with ordinary `resources/read`. Each skill entry carries its frontmatter and a complete file manifest with a per-file SHA-256 digest and size.
+智能体技能（`SKILL.md`文件夹）于2026年8月19日在Claude API上离开测试版，MCP技能扩展（最终版9月13日）让服务器发布技能，与它们描述的工具相邻，而不是将它们复制到文件系统或插件中。声明它的服务器实现`skills/list`和`skills/get`，技能文件通过普通`resources/read`读取。每个技能条目携带其前言和完整的文件清单，带有每个文件的SHA-256摘要和大小。
 
-The host rules are the part to learn, because they answer "how do you stop a remote server from silently changing the instructions my agent loads," the skill version of a tool rug pull:
+主机规则是学习的部分，因为它们回答了"如何阻止远程服务器悄悄更改我的智能体加载的指令"，这是工具拉地毯的技能版本：
 
-- Hosts **must** verify size, digest, and frontmatter before use, and **must** bind any persisted approval to the whole manifest, so a changed, added, or removed file revokes approval.
-- Hosts **must not** prefetch skill files and **must** treat skill content as untrusted.
-- A skill's `allowed-tools` grants or any host-side code execution need explicit per-skill approval, and a cross-server read needs per-call approval naming both servers.
+- 主机**必须**在使用前验证大小、摘要和前言，并且**必须**将任何持久批准绑定到整个清单，因此更改、添加或删除的文件会撤销批准。
+- 主机**不得**预取技能文件，并且**必须**将技能内容视为不可信。
+- 技能的`allowed-tools`授权或任何主机端代码执行需要明确的逐技能批准，跨服务器读取需要命名两个服务器的逐调用批准。
 
-Adoption is early: Hugging Face's MCP server implements it and MCP Inspector 2.6.0 has partial support, while the official SDK pull requests were still open in late September. Skills are becoming versioned production artifacts elsewhere too (AWS added `update-skill` commands for its agent toolkit on September 30), so give them the same pinning and update review as package dependencies.
+采用尚处于早期：Hugging Face的MCP服务器实现了它，MCP Inspector 2.6.0有部分支持，而官方SDK拉取请求在9月下旬仍然开放。技能在其他地方也正在成为版本化的生产工件（AWS在9月30日为其智能体工具包添加了`update-skill`命令），因此给它们与包依赖项相同的固定和更新审查。
 
-**Ecosystem scale:** SDK downloads run in the hundreds of millions per month. The protocol's own July 28 release post cited close to half a billion monthly across Tier 1 SDKs; Anthropic separately reported 400M monthly and a 4x increase across the year, so treat the aggregate as an order of magnitude rather than a precise figure and check the metric definition before quoting it. In August one connector directory alone listed **over 950 MCP servers**. At the July 28 final release AWS, Cloudflare, Google Cloud, Microsoft, and Netlify announced launch support. Microsoft rolled out MCP-based Federated Copilot Connectors manageable from the Microsoft 365 admin center, Apple made Xcode an MCP host for external coding agents, and Bloomberg has published a production case study of MCP as its internal agent-tool layer.
+**生态系统规模：** SDK下载量每月数亿次。协议本身的7月28日发布帖子引用了Tier 1 SDK每月近5亿次；Anthropic单独报告每月4亿次，全年增长4倍，因此将总数视为数量级而不是精确数字，并在引用前检查指标定义。仅在8月，一个连接器目录就列出了**超过950个MCP服务器**。在7月28日最终发布时，AWS、Cloudflare、Google Cloud、Microsoft和Netlify宣布了启动支持。Microsoft推出了可从Microsoft 365管理中心管理的基于MCP的联邦Copilot连接器，Apple使Xcode成为外部编码智能体的MCP主机，Bloomberg发布了MCP作为其内部智能体工具层的生产案例研究。
 
-**The migration to the stateless revision is real but slow.** npm downloads for September 2026: about 231.9M for the v1 TypeScript SDK (`@modelcontextprotocol/sdk`) against about 30.6M for `@modelcontextprotocol/core`, 25.4M for `@modelcontextprotocol/server`, and 19.1M for `@modelcontextprotocol/client`. On a single-package comparison v2 is now roughly 8 to 13 percent of v1 volume, up from low single digits in mid-August, and v1 is still growing (about 207M in the 30 days to August 14). Plan for a long dual-version period: the C# SDK v2.2.0 (August 13) added an `HttpServerSessionMode` that lets a single endpoint serve both 2025-11-25 stateful clients and 2026-07-28 stateless clients, the pattern to copy if you operate a server fleet with mixed clients.
+**向无状态修订版的迁移是真实的但缓慢的。** 2026年9月的npm下载量：v1 TypeScript SDK（`@modelcontextprotocol/sdk`）约2.319亿次，而`@modelcontextprotocol/core`约3060万次，`@modelcontextprotocol/server`2540万次，`@modelcontextprotocol/client`1910万次。在单一包比较中，v2现在约占v1流量的8%到13%，高于8月中旬的低个位数，而v1仍在增长（截至8月14日的30天内约2.07亿次）。计划一个长期的双版本期：C# SDK v2.2.0（8月13日）添加了一个`HttpServerSessionMode`，让单个端点同时服务2025-11-25有状态客户端和2026-07-28无状态客户端，如果您运营混合客户端的服务器舰队，这是要复制的模式。
 
-The SDK majors break code even where the wire protocol does not. In Python, `pip install mcp` has resolved to 2.x since 2.0.0 (July 28): `FastMCP` became `MCPServer`, a single `Client` replaced v1's transport-plus-`ClientSession` layering, and v1 gets security and critical fixes only, so tutorials that import `FastMCP` break on a fresh install. Agent frameworks followed within weeks (OpenAI Agents SDK 0.20.0 supports both majors; LangChain 1.4.0 gates MCP interrupt routing on the negotiated protocol era), which shows the blast radius of a major version in a dependency every framework shares. Tier 1 SDKs are now TypeScript, Python, C#, Go, Rust (promoted August 21), and Ruby (promoted September 28); Java is Tier 2, and Swift, PHP, and Kotlin are Tier 3. The conformance suite publishes frozen requirement sets for the revision (0.2.0-alpha.12 as of October 1).
+SDK主要版本会破坏代码，即使线路协议不会。在Python中，`pip install mcp`自2.0.0（7月28日）以来解析到2.x：`FastMCP`变成了`MCPServer`，单个`Client`替代了v1的传输加`ClientSession`分层，而v1仅获得安全和关键修复，因此导入`FastMCP`的教程在全新安装时会中断。智能体框架在几周内跟进（OpenAI Agents SDK 0.20.0支持两个主要版本；LangChain 1.4.0在协商的协议时代上门控MCP中断路由），这显示了每个框架共享的依赖项中主要版本的爆炸半径。Tier 1 SDK现在是TypeScript、Python、C#、Go、Rust（8月21日晋升）和Ruby（9月28日晋升）；Java是Tier 2，Swift、PHP和Kotlin是Tier 3。一致性套件发布修订版的冻结需求集（截至10月1日为0.2.0-alpha.12）。
 
-**Governance**: MCP is governed under the Linux Foundation's Agentic AI Foundation (AAIF), which now hosts six projects (MCP, goose, AGENTS.md, agentgateway, A2A, and Agent Router, the former Envoy AI Gateway) and reported 247 member organizations on August 12. The Governance Working Group runs a Contributor Ladder and a delegation model allowing domain-specific working groups to accept SEPs (Specification Enhancement Proposals) without full core-maintainer review; the 2026-07-28 revision added a formal Extensions Track, and since September 28 SEP authors must discuss a proposal with the relevant working or interest group before opening the SEP pull request. AAIF also launched the first vendor-neutral MCP credential on September 14, the Model Context Protocol Associate (MCPA): $250, 90 minutes, aligned to 2026-07-28, with 24 percent of the exam on security and governance.
+**治理**：MCP由Linux Foundation的Agentic AI Foundation（AAIF）管理，现在托管六个项目（MCP、goose、AGENTS.md、agentgateway、A2A和Agent Router，前Envoy AI Gateway），并于8月12日报告了247个成员组织。治理工作组运行贡献者阶梯和委托模型，允许特定领域的工作组在没有完整核心维护者审查的情况下接受SEP（规范增强提案）；2026-07-28修订版添加了正式的扩展轨道，自9月28日起SEP作者必须在打开SEP拉取请求之前与相关工作组或兴趣组讨论提案。AAIF还在9月14日推出了第一个供应商中立的MCP凭证，模型上下文协议助理（MCPA）：250美元，90分钟，对齐2026-07-28，考试内容的24%是安全和治理。
 
-Sources: modelcontextprotocol.io (specification, roadmap, extensions), blog.modelcontextprotocol.io, github.com/modelcontextprotocol, aaif.io
+来源：modelcontextprotocol.io（规范、路线图、扩展），blog.modelcontextprotocol.io，github.com/modelcontextprotocol，aaif.io
 
 ---
 
-## Agent Plugins
+## 智能体插件
 
-MCP standardizes how an agent reaches a tool. **Agent Plugins**, which reached 1.0.0 on August 6, 2026, standardizes how you *ship* a bundle of capability to an agent. It is a vendor-neutral packaging format governed by a technical steering committee drawn from Amazon, Cursor, Microsoft, OpenAI, and Vercel, and GitHub made it generally available across VS Code, Copilot CLI, the Copilot SDK, and the Copilot app on August 12. 1.0.0 is still the only published version; a 1.1.0 working draft opened August 19 with proposals for namespaced skill discovery, portable display names and icons, and per-server MCP extension data, all still inside the skills-plus-MCP boundary described below.
+MCP标准化了智能体如何到达工具。**智能体插件**于2026年8月6日达到1.0.0，标准化了如何将一揽子能力交付给智能体。它是一个供应商中立的打包格式，由来自Amazon、Cursor、Microsoft、OpenAI和Vercel的技术指导委员会管理，GitHub于8月12日在VS Code、Copilot CLI、Copilot SDK和Copilot应用上普遍提供。1.0.0仍然是唯一发布的版本；1.1.0工作草案于8月19日开放，提出了命名空间技能发现、可移植显示名称和图标以及逐服务器MCP扩展数据等提案，所有这些都仍在下面描述的技能加MCP边界内。
 
-A plugin is a directory:
+插件是一个目录：
 
 ```
 my-plugin/
-├── plugin.json          # required manifest
-├── skills/              # optional: Agent Skills (SKILL.md files)
+├── plugin.json          # 必需清单
+├── skills/              # 可选：智能体技能（SKILL.md文件）
 │   └── code-review/
 │       └── SKILL.md
-├── mcp.json             # optional: MCP server declarations
-└── com.example.client/  # optional: client-specific extras, namespaced
+├── mcp.json             # 可选：MCP服务器声明
+└── com.example.client/  # 可选：客户端特定额外内容，命名空间
 ```
 
-The `mcp.json` schema supports three server shapes (stdio with command, args, and env; Streamable HTTP; and SSE), and reserves two environment variables, `PLUGIN_ROOT` and `PLUGIN_DATA`, that the client injects at load time.
+`mcp.json`模式支持三种服务器形状（带命令、参数和env的stdio；Streamable HTTP；和SSE），并保留两个环境变量，`PLUGIN_ROOT`和`PLUGIN_DATA`，客户端在加载时注入。
 
-The design decision worth studying is what the spec **refuses** to standardize. Only two component types are portable: skills and MCP servers. Commands, hooks, subagents, rules, and LSP servers stay client-specific unless carried in a namespaced directory. That keeps the portable surface small enough that a plugin genuinely runs everywhere, and pushes the fast-moving, client-specific parts into namespaces where they cannot break interoperability.
+值得研究的设计决策是规范**拒绝**标准化的内容。只有两种组件类型是可移植的：技能和MCP服务器。命令、钩子、子智能体、规则和LSP服务器保持客户端特定，除非在命名空间目录中携带。这使可移植表面保持足够小，使插件真正到处运行，并将快速变化的客户端特定部分推入命名空间，在那里它们不能破坏互操作性。
 
-### How the Three Layers Fit
+### 三层如何配合
 
 ```mermaid
 flowchart TD
-    P[Agent Plugin<br>distribution unit] --> S[Agent Skills<br>what the agent knows how to do]
-    P --> M[MCP servers<br>what the agent can touch]
-    S -.progressive disclosure.-> A[Agent runtime]
-    M -.tool calls.-> A
-    A -->|delegates across orgs| A2[A2A: other agents]
+    P[智能体插件<br>分发单元] --> S[智能体技能<br>智能体知道如何做的]
+    P --> M[MCP服务器<br>智能体可以触及的]
+    S -.渐进式披露.-> A[智能体运行时]
+    M -.工具调用.-> A
+    A -->|跨组织委托| A2[A2A: 其他智能体]
 ```
 
-| Layer | Standardizes | Unit | Governance |
+| 层 | 标准化 | 单元 | 治理 |
 |-------|--------------|------|------------|
-| **Agent Skills** (`SKILL.md`) | Procedures and domain knowledge the agent applies | A folder with frontmatter plus optional scripts and assets; can also be served remotely through the MCP skills extension | agentskills.io |
-| **MCP** | Access to tools, data, and resources | A server speaking JSON-RPC over stdio or Streamable HTTP | Linux Foundation, Agentic AI Foundation |
-| **Agent Plugins** | Distribution and installation of the two above | A directory with `plugin.json` | Agent Plugins TSC |
-| **A2A** | Delegation between agents across vendor or org boundaries | An agent endpoint described by an Agent Card (signing optional) | Linux Foundation, Agentic AI Foundation (since August 2026) |
+| **智能体技能** (`SKILL.md`) | 智能体应用的程序和领域知识 | 带前言的文件夹加可选脚本和资源；也可以通过MCP技能扩展远程服务 | agentskills.io |
+| **MCP** | 访问工具、数据和资源 | 通过stdio或Streamable HTTP讲JSON-RPC的服务器 | Linux Foundation, Agentic AI Foundation |
+| **智能体插件** | 上述两者的分发和安装 | 带`plugin.json`的目录 | 智能体插件TSC |
+| **A2A** | 跨供应商或组织边界的智能体之间的委托 | 由智能体卡片描述的智能体端点（签名可选） | Linux Foundation, Agentic AI Foundation（自2026年8月起） |
 
-The practical consequence for platform teams: enterprise administration now has one control point. GitHub reuses the existing `managed-settings.json` so plugin installation, marketplace access, and MCP server allowlists are all managed through the same file. If you are standing up an internal agent platform, the plugin is the unit you review, sign, and distribute, not the individual server.
+对平台团队的实际影响：企业管理现在有一个控制点。GitHub重用现有的`managed-settings.json`，因此插件安装、市场访问和MCP服务器允许列表都通过同一文件管理。如果您正在建立内部智能体平台，插件是您审查、签名和分发的单元，而不是单个服务器。
 
-**The security caveat that comes with it:** a plugin bundles instructions (skills) with capability (MCP servers), so installing one is closer to installing a package than adding a bookmark. Static analysis of skills has a hard detection ceiling, with published results showing 93% detection for data exfiltration but only 42% for natural-language prompt injection and **0% for host destruction**, because destructive skills use ordinary shell commands that look identical to legitimate ones. Adaptive attackers push further: the Pretext attack (arXiv 2609.39607) evaded an LLM-assisted skill scanner up to 97% of the time by moving payloads from code into natural language and splitting them across files. Review plugins like dependencies: pin versions, prefer signed sources, and never let a plugin widen the action surface of the agent that loads it.
+**随之而来的安全警告：** 插件将指令（技能）与能力（MCP服务器）捆绑在一起，因此安装一个更接近安装包而不是添加书签。技能的静态分析有一个难以突破的检测上限，发布的结果显示数据外泄检测率为93%，但自然语言提示注入仅为42%，**主机破坏为0%**，因为破坏性技能使用与合法命令看起来相同的普通shell命令。适应性攻击者更进一步：Pretext攻击（arXiv 2609.39607）通过将载荷从代码转移到自然语言并跨文件分割，逃避了LLM辅助技能扫描器高达97%的时间。像审查依赖项一样审查插件：固定版本、优先选择签名来源，永远不要让插件扩大加载它的智能体的操作表面。
 
-**And verify the pin.** Plugin4Shell (AIR Security, September 17, 2026) showed Claude Code, Codex, GitHub Copilot, and Gemini CLI installing plugins pinned to a 40-hex commit SHA without checking that the checked-out tree matched the pin. Git prefers a branch whose name equals the SHA, so on hosts that accept hash-shaped branch names the repo owner could swap already-approved code, and background updates pulled it with no click. Claude Code (2.1.179) and Codex (0.146.0) fixed it; Copilot had no fix at disclosure. The control is to resolve the commit actually present in the working tree after checkout and abort on mismatch. The stakes keep rising as harness extensions gain power: Claude Code mods (2.1.287, October 1) are plugin-distributed TypeScript functions that can rewrite tool calls and approve or deny permission requests, and Anthropic warns they are not sandboxed, so plugin review is now part of the agent's trust boundary.
-
----
-
-## Agent-to-Agent Protocol (A2A)
-
-Google introduced the **Agent2Agent (A2A)** protocol in April 2025 to solve a problem MCP does not address: how do **agents from different vendors** communicate with each other (not just with tools)?
-
-### What A2A Solves
-
-MCP defines how an agent connects to **tools and data**. A2A defines how an **orchestrator agent delegates tasks to a specialist agent** from a different vendor or framework, even when they do not share memory, tools, or context.
-
-### Technical Foundation
-
-- Built on HTTP with three bindings in v1.0: **JSON-RPC, gRPC, and REST** (the same web foundation as MCP, for easy integration)
-- Supports enterprise-grade authentication with parity to OpenAPI auth schemes
-- **Agent Cards**: JSON metadata documents that describe an agent's capabilities, skills, and endpoint, served at `GET /.well-known/agent-card.json` (not `agent.json`). Signing them with JWS is optional
-
-### A2A Task Lifecycle
-
-The v1.0 methods are `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, and `SubscribeToTask`, with REST bindings such as `POST /message:send` and `GET /tasks/{id}`. There is no `POST /tasks` or `tasks.create`: the client sends a **message**, and the server decides whether to answer directly or create a **task**. That is the design choice interviewers probe.
-
-```
-[Client Agent] ── SendMessage (POST /message:send) ──→ [Remote Agent]
-                                                        │ server decides: reply, or create a Task
-               ←── Message, or Task {id, state: working} ┘
-[Client Agent] ── SubscribeToTask / GetTask ──→
-               ←── streamed status updates and artifacts
-               ←── Task completed (final artifact)
-```
-
-A2A tasks support long-running operations with streaming status updates, making it suitable for enterprise workflows spanning minutes or hours.
-
-**What v1.1 adds (unreleased).** Work on the `dev-1.1` branch includes a monotonically increasing `Task.generation` field (merged August 12, 2026). Clients use it to detect missed events, long-poll with `current_generation`, and do compare-and-set with `if_generation_match`, which fails with HTTP 412 or gRPC `ABORTED` on a mismatch. That is the textbook answer to several clients safely steering one long-running remote task without lost updates. The roadmap (September 15) also lists bidirectional streaming and an official A2A CLI for coding-harness integration.
-
-### Industry Adoption
-
-- Backed by 50+ technology partners at launch, including Atlassian, Salesforce, SAP, LangChain, and PayPal
-- Donated to the **Linux Foundation** in June 2025, and accepted into the **Agentic AI Foundation** as a Growth Stage project on August 17, 2026, so MCP and A2A now share one neutral foundation; AAIF cites 150+ supporting organizations and native A2A support in Google Cloud, Amazon Bedrock AgentCore, and Microsoft Azure AI Foundry
-- **Version 0.3** (July 2025) added gRPC support, signed Agent Cards, and extended Python SDK support. **v1.0.0** shipped March 12, 2026, and **v1.0.1** (May 28, 2026) is still the latest specification release as of October 2026; there is no protocol v1.2. Higher numbers belong to SDKs: a2a-python 1.2.1 (the 1.2 line added a multi-replica cluster mode), a2a-js 1.3.0, a2a-java 1.4.0.Final, and a2a-go v2.6.0
-- NIST launched an "AI Agent Standards Initiative" in February 2026 partly in response to A2A/MCP momentum
-
-Sources: github.com/a2aproject/A2A (releases, specification, roadmap), aaif.io/blog/a2a-joins-aaif
+**并验证固定。** Plugin4Shell（AIR Security，2026年9月17日）显示Claude Code、Codex、GitHub Copilot和Gemini CLI安装固定到40位十六进制提交SHA的插件，而不检查检出树是否匹配该固定。Git偏好名称等于SHA的分支，因此在接受哈希形状分支名称的主机上，仓库所有者可以交换已批准的代码，后台更新无需点击即可拉取。Claude Code（2.1.179）和Codex（0.146.0）修复了它；Copilot在披露时还没有修复。控制是在检出后解析工作树中实际存在的提交，并在不匹配时中止。随着框架扩展获得能力，赌注不断上升：Claude Code mods（2.1.287，10月1日）是插件分发的TypeScript函数，可以重写工具调用并批准或拒绝权限请求，Anthropic警告它们不受沙箱保护，因此插件审查现在成为智能体信任边界的一部分。
 
 ---
 
-## The Protocol Landscape: Tools, Agents, and Payments
+## 智能体到智能体协议（A2A）
 
-In production enterprise systems, multiple protocols operate at different layers simultaneously:
+Google于2025年4月推出了**Agent2Agent（A2A）**协议，以解决MCP无法解决的问题：**不同供应商的智能体**如何相互通信（不仅仅是与工具）？
 
-| Protocol | Layer | Purpose | Governed By |
+### A2A解决什么
+
+MCP定义了智能体如何连接到**工具和数据**。A2A定义了**编排智能体如何将任务委托给专业智能体**，来自不同的供应商或框架，即使它们不共享记忆、工具或上下文。
+
+### 技术基础
+
+- 基于HTTP构建，v1.0中有三种绑定：**JSON-RPC、gRPC和REST**（与MCP相同的Web基础，便于集成）
+- 支持企业级认证，与OpenAPI认证方案对等
+- **智能体卡片**：JSON元数据文档，描述智能体的能力、技能和端点，通过`GET /.well-known/agent-card.json`服务（不是`agent.json`）。用JWS签名是可选的
+
+### A2A任务生命周期
+
+v1.0方法是`SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`和`SubscribeToTask`，带有REST绑定，如`POST /message:send`和`GET /tasks/{id}`。没有`POST /tasks`或`tasks.create`：客户端发送一个**消息**，服务器决定直接回答还是创建一个**任务**。这是面试官探究的设计选择。
+
+```
+[客户端智能体] ── SendMessage (POST /message:send) ──→ [远程智能体]
+                                                        │ 服务器决定：回复，还是创建任务
+               ←── 消息，或任务 {id, state: working} ┘
+[客户端智能体] ── SubscribeToTask / GetTask ──→
+               ←── 流式状态更新和产物
+               ←── 任务完成（最终产物）
+```
+
+A2A任务支持具有流式状态更新的长时间运行操作，使其适合跨越数分钟或数小时的企业工作流。
+
+**v1.1添加的内容（未发布）。** `dev-1.1`分支上的工作包括一个单调递增的`Task.generation`字段（2026年8月12日合并）。客户端用它来检测遗漏的事件，用`current_generation`进行长轮询，并用`if_generation_match`进行比较和设置，在不匹配时失败并返回HTTP 412或gRPC `ABORTED`。这是多个客户端安全地操控一个长时间运行的远程任务而不丢失更新的教科书答案。路线图（9月15日）还列出了双向流和一个用于编码框架集成的官方A2A CLI。
+
+### 行业采用
+
+- 在发布时得到50多家技术合作伙伴的支持，包括Atlassian、Salesforce、SAP、LangChain和PayPal
+- 于2025年6月捐赠给**Linux Foundation**，并于2026年8月17日作为成长阶段项目被**Agentic AI Foundation**接受，因此MCP和A2A现在共享一个中立基金会；AAIF引用了150多个支持组织以及Google Cloud、Amazon Bedrock AgentCore和Microsoft Azure AI Foundry中的原生A2A支持
+- **版本0.3**（2025年7月）增加了gRPC支持、签名智能体卡片和扩展的Python SDK支持。**v1.0.0**于2026年3月12日发货，**v1.0.1**（2026年5月28日）截至2026年10月仍然是最新的规范发布；没有协议v1.2。更高的数字属于SDK：a2a-python 1.2.1（1.2线添加了多副本集群模式）、a2a-js 1.3.0、a2a-java 1.4.0.Final和a2a-go v2.6.0
+- NIST于2026年2月启动了"AI智能体标准倡议"，部分是对A2A/MCP势头的回应
+
+来源：github.com/a2aproject/A2A（发布、规范、路线图），aaif.io/blog/a2a-joins-aaif
+
+---
+
+## 协议全景：工具、智能体和支付
+
+在生产企业系统中，多个协议同时在不同层运行：
+
+| 协议 | 层 | 目的 | 管理方 |
 |----------|-------|---------|-------------|
-| **MCP** | Agent-to-Tool | Universal tool and data access | Linux Foundation (Agentic AI Foundation) |
-| **A2A** | Agent-to-Agent | Cross-vendor agent delegation | Linux Foundation (Agentic AI Foundation, since August 2026) |
-| **ACP** (Agent Communication Protocol) | Agent Communication | Lightweight async agent messaging (REST) | IBM-originated; merged into A2A in August 2025 |
+| **MCP** | 智能体到工具 | 通用工具和数据访问 | Linux Foundation (Agentic AI Foundation) |
+| **A2A** | 智能体到智能体 | 跨供应商智能体委托 | Linux Foundation (Agentic AI Foundation, 自2026年8月起) |
+| **ACP** (智能体通信协议) | 智能体通信 | 轻量级异步智能体消息传递（REST） | IBM发起；于2025年8月合并入A2A |
 
-### How They Complement Each Other
+### 它们如何互补
 
 ```
 ┌──────────────────────────────────────────┐
-│            Enterprise System             │
+│            企业系统             │
 │                                          │
 │  ┌─────────┐  A2A   ┌─────────┐         │
-│  │ Agent A  │◄──────►│ Agent B │         │
-│  │(Vendor X)│        │(Vendor Y)│        │
+│  │ 智能体 A  │◄──────►│ 智能体 B │         │
+│  │(供应商 X)│        │(供应商 Y)│        │
 │  └────┬─────┘        └────┬─────┘        │
 │       │ MCP                │ MCP          │
 │  ┌────▼─────┐        ┌────▼─────┐        │
-│  │ DB Tool  │        │ API Tool │        │
-│  │ Server   │        │ Server   │        │
+│  │ 数据库工具  │        │ API工具 │        │
+│  │ 服务器   │        │ 服务器   │        │
 │  └──────────┘        └──────────┘        │
 └──────────────────────────────────────────┘
 ```
 
-**Key insight**: MCP and A2A are complementary, not competing. MCP handles agent-to-tool connections; A2A handles agent-to-agent coordination. Production systems use both.
+**关键见解**：MCP和A2A是互补的，不是竞争的。MCP处理智能体到工具的连接；A2A处理智能体到智能体的协调。生产系统两者都用。
 
-**ACP note**: The IBM-originated Agent Communication Protocol (ACP) team merged its work into A2A in August 2025 to develop a unified agent communication standard. New projects should target A2A as the primary agent-to-agent protocol.
+**ACP说明**：IBM发起的智能体通信协议（ACP）团队于2025年8月将其工作合并入A2A，以开发统一的智能体通信标准。新项目应将A2A作为主要的智能体到智能体协议。
 
-### The Commerce Layer
+### 商业层
 
-Agents that buy things need a third layer: proving user intent, handling step-up authentication mid-checkout, and paying for metered tools. Four efforts cover it, at very different maturity:
+执行购买操作的智能体需要第三层能力：验证用户意图、处理结账过程中的阶梯式认证，以及为按量计费工具付费。目前有四项工作在推进，成熟度各不相同：
 
-| Protocol | Covers | Status (October 2026) |
+| 协议 | 覆盖范围 | 状态（2026 年 10 月） |
 |----------|--------|-----------------------|
-| **UCP** (Universal Commerce Protocol) | Discovery, cart, and checkout across Shopping, Payment, and Common verticals | Release v2026-08-25 added an Actions primitive for out-of-band steps such as vendor-agnostic 3DS2, payment schedules and split payments, and delegated identity providers; a Lodging Booking draft merged September 24 |
-| **Agentic Commerce Protocol** (OpenAI and Stripe) | Cart, product feed, orders, authentication, MCP | Still labeled beta; latest dated spec 2026-04-17 |
-| **AP2** (Agent Payments Protocol, Google) | Payment mandates that prove what the user authorized | v0.2.0 (April 28, 2026); no release since |
-| **x402** | Pay-per-call over HTTP using the 402 status code; cards and stablecoins | x402 Foundation launched under the Linux Foundation July 14, 2026; 50+ members by October 1 |
+| **UCP**（通用商业协议） | 跨购物、支付和通用垂直领域的发现、购物车和结账 | 版本 v2026-08-25 新增了 Actions 原语，用于处理带外步骤，如供应商无关的 3DS2、付款计划和拆分支付，以及委托身份提供者；住宿预订草案于 9 月 24 日合并 |
+| **Agentic Commerce Protocol**（OpenAI 和 Stripe） | 购物车、产品流、订单、认证、MCP | 仍标记为 beta；最新标注日期为 2026-04-17 |
+| **AP2**（智能体支付协议，Google） | 证明用户授权的支付授权 | v0.2.0（2026 年 4 月 28 日）；此后无新版本 |
+| **x402** | 通过 HTTP 402 状态码按调用付费；支持卡和稳定币 | x402 基金会于 2026 年 7 月 14 日由 Linux 基金会发起；截至 10 月 1 日已有 50+ 成员 |
 
-Watch the acronym collision: in older material "ACP" means IBM's Agent Communication Protocol (now part of A2A); in commerce material it means the OpenAI and Stripe Agentic Commerce Protocol. For system design, x402 is the piece most likely to touch a non-commerce agent: it is a standard way to meter and pay for API and MCP tool calls, which turns an agent's tool budget into real spend that needs the same caps as token spend.
+注意缩写冲突：在较旧的资料中，"ACP" 指 IBM 的智能体通信协议（现已并入 A2A）；在商业资料中，它指 OpenAI 和 Stripe 的 Agentic Commerce Protocol。对于系统设计而言，x402 最可能触及非商业智能体：它是一种标准化的 API 和 MCP 工具调用计量与付费方式，将智能体的工具预算转化为需要与 Token 支出同等上限的实际开销。
 
 ---
 
-## A2A v1.0 and MCP in Production
+## A2A v1.0 与 MCP 生产实践
 
-A2A v1.0.0 shipped on March 12, 2026 (not at Google Cloud Next in April, as often repeated), and the project did not move under the Agentic AI Foundation until August 2026, when AAIF counted 150+ supporting organizations. **Agent Card signing predates v1.0**: v0.3.0 already defined JWS (RFC 7515) signatures, and v1.0 added the normative signing procedure (RFC 8785 JSON canonicalization, with the signatures field excluded from the signed content) while keeping signing optional. That is what lets a client agent verify that a remote agent at `https://refunds.acme.com/.well-known/agent-card.json` actually belongs to ACME before issuing a task, provided ACME signs its card and the client checks the signature. Native A2A client/server support ships in Google ADK, LangGraph, CrewAI, LlamaIndex, Semantic Kernel, and Microsoft Agent Framework (AutoGen's successor).
+A2A v1.0.0 于 2026 年 3 月 12 日发布（并非如常被重复的 Google Cloud Next 四月大会），该项目直到 2026 年 8 月才移交 Agentic AI Foundation，当时 AAIF 已有 150 多家支持组织。**智能体卡片签名早于 v1.0**：v0.3.0 已定义 JWS（RFC 7515）签名，v1.0 增加了规范的签名流程（RFC 8785 JSON 规范化，签名字段不包含在被签名内容中），同时签名保持可选。这使得客户端智能体能够在发起任务前验证 `https://refunds.acme.com/.well-known/agent-card.json` 上的远程智能体是否确实属于 ACME，前提是 ACME 对其卡片签名且客户端检查签名。原生 A2A 客户端/服务端支持已在 Google ADK、LangGraph、CrewAI、LlamaIndex、Semantic Kernel 和 Microsoft Agent Framework（AutoGen 的继任者）中提供。
 
-### Composition Pattern: Support Agent Delegating Refunds
+### 组合模式：客服智能体委托退款
 
-A LangGraph customer-support agent owns conversation state and a set of MCP tools (CRM, ticket search, knowledge base). When the user asks for a refund, that work belongs to a different team's Finance refund agent, which lives behind an A2A endpoint and enforces its own policy, audit log, and SOX controls. The support agent does not call the refund database directly; it sends an A2A message and lets the Finance agent decide, including whether to open a long-running task.
+一个 LangGraph 客服智能体拥有对话状态和一组 MCP 工具（CRM、工单搜索、知识库）。当用户请求退款时，这项工作属于另一个团队的财务退款智能体，它位于 A2A 端点之后，执行自己的策略、审计日志和 SOX 控制。客服智能体不直接调用退款数据库；它发送 A2A 消息，让财务智能体决定，包括是否开启长期任务。
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Support as Support Agent (LangGraph)
-    participant CRM as MCP CRM Server
-    participant KB as MCP KB Server
-    participant Refund as Refund Agent (A2A)
-    participant Ledger as MCP Ledger Server
+    participant Support as 客服智能体 (LangGraph)
+    participant CRM as MCP CRM 服务器
+    participant KB as MCP 知识库服务器
+    participant Refund as 退款智能体 (A2A)
+    participant Ledger as MCP 账簿服务器
 
-    User->>Support: I want a refund for order 8821
+    User->>Support: 我要对订单 8821 退款
     Support->>CRM: tools/call lookup_customer
-    CRM-->>Support: customer profile
+    CRM-->>Support: 客户资料
     Support->>KB: tools/call search_policy
-    KB-->>Support: refund policy snippet
+    KB-->>Support: 退款政策片段
     Support->>Refund: SendMessage refund order 8821
-    Refund-->>Support: Task created, state working
+    Refund-->>Support: 任务已创建，状态进行中
     Refund->>Ledger: tools/call post_credit
-    Ledger-->>Refund: credit id
-    Refund-->>Support: Task completed with artifact
-    Support-->>User: refund confirmed
+    Ledger-->>Refund: 信用 id
+    Refund-->>Support: 任务完成并附带产出
+    Support-->>User: 退款已确认
 ```
 
-The Support agent never sees the ledger. The Refund agent owns ledger access through its own MCP server and enforces a different policy. The A2A task is asynchronous: the Support agent can yield to the user with a hold message while the refund processes and reattach when the artifact arrives.
+客服智能体永远看不到账簿。退款智能体通过自己的 MCP 服务器拥有账簿访问权限并执行不同的策略。A2A 任务是异步的：客服智能体可以在退款处理过程中向用户发送等待消息，并在产出到达时重新连接。
 
-### MCP 2026 Roadmap Highlights: Both Shipped
+### MCP 2026 路线图亮点：均已交付
 
-The two roadmap items this section tracked in mid-2026, transport scalability and enterprise-managed auth, have both landed. Transport scalability arrived not as session resumption but as the opposite design: the 2026-07-28 revision removed sessions from the protocol core entirely (see [the stateless rewrite](#mcp-2026-07-28-the-stateless-rewrite)). Enterprise-managed auth shipped as the Enterprise-Managed Authorization extension in June 2026. The RFC 8707 posture still holds and is now hardened further: MCP servers are OAuth Resource Servers, tokens are audience-bound to a specific server URI and cannot be replayed across servers. The next set of priorities is in the [August 22 roadmap](#what-the-august-22-roadmap-prioritizes).
+本部分在 2026 年中期追踪的两项路线图事项——传输可扩展性和企业托管认证——均已落地。传输可扩展性并非以会话恢复的形式出现，而是相反的设计：2026-07-28 修订版完全从协议核心中移除了会话（参见[无状态重写](#mcp-2026-07-28-the-stateless-rewrite)）。企业托管认证以 Enterprise-Managed Authorization 扩展的形式于 2026 年 6 月交付。RFC 8707 的立场仍然成立，并且现在进一步得到强化：MCP 服务器是 OAuth 资源服务器，Token 与特定服务器 URI 绑定受众，无法跨服务器重放。下一组优先级在[8 月 22 日路线图](#what-the-august-22-roadmap-prioritizes)中。
 
-### MCP Production Hardening
+### MCP 生产加固
 
-STDIO MCP servers implicitly assume that the process boundary is the trust boundary, and 2026 kept proving that assumption wrong. The launch path is itself an attack surface: in Chainlit (CVE-2026-45018, critical, fixed in 2.12.0) the MCP stdio endpoint checked only the executable name against an allowlist, so `npx -y -c <payload>` passed and ran arbitrary shell commands, and a missing `allowed_executables` setting meant allow-all. Allowlist the full command and its arguments, not the binary name. The architectural fix is two-step:
+STDIO MCP 服务器隐式假设进程边界就是信任边界，而 2026 年不断证明这个假设是错误的。启动路径本身就是一个攻击面：在 Chainlit（CVE-2026-45018，严重，已在 2.12.0 中修复）中，MCP stdio 端点仅将可执行文件名与允许列表进行比对，因此 `npx -y -c <payload>` 可以通过并运行任意 shell 命令，而缺少 `allowed_executables` 设置意味着全部允许。应将完整命令及其参数列入允许列表，而不仅仅是二进制名称。架构修复分两步：
 
-1. **Migrate STDIO MCP servers to HTTP transport with TLS** wherever possible. HTTP transport forces an explicit trust boundary (the network) and enables OAuth 2.1 Resource Server enforcement, which STDIO cannot provide. HTTP is not automatically safer, though: a local HTTP server bound to `0.0.0.0` without auth is reachable from any browser tab through DNS rebinding. mysql_mcp_server before 0.4.2 (CVE-2026-59971, CVSS 10.0) shipped exactly that in SSE mode, letting a victim's browser call `execute_sql` unauthenticated, while its default stdio mode was unaffected. Bind local servers to loopback, require auth, and validate `Origin` and `Host`.
-2. **For STDIO servers that cannot migrate**, run each server in a dedicated container with no host filesystem mounts, no network egress, a strict CPU and memory budget, and a read-only image. Treat the container as the trust boundary; the blast radius of compromise is the container. Isolation without egress policy is not enough: ToolHive (CVE-2026-58197) let containerized MCP servers reach host services through `host.docker.internal`.
+1. **尽可能将 STDIO MCP 服务器迁移到支持 TLS 的 HTTP 传输**。HTTP 传输强制建立显式的信任边界（网络），并启用 OAuth 2.1 资源服务器执行机制，这是 STDIO 无法提供的。但 HTTP 并非自动更安全：绑定到 `0.0.0.0` 且未经认证的本地 HTTP 服务器可通过 DNS 重绑定从任何浏览器标签页访问。mysql_mcp_server 0.4.2 之前版本（CVE-2026-59971，CVSS 10.0）在 SSE 模式下正是如此，让受害者的浏览器无需认证即可调用 `execute_sql`，而其默认的 stdio 模式不受影响。将本地服务器绑定到回环地址，要求认证，并验证 `Origin` 和 `Host`。
+2. **对于无法迁移的 STDIO 服务器**，在每个专用容器中运行每个服务器，不挂载主机文件系统，无网络出站，设置严格的 CPU 和内存预算，并使用只读镜像。将容器视为信任边界；泄露的波及范围仅限于容器。仅有隔离而无出站策略是不够的：ToolHive（CVE-2026-58197）让容器化 MCP 服务器通过 `host.docker.internal` 访问主机服务。
 
-### State-Handle Hijacking: The Stateless Core's New Attack Surface
+### 状态句柄劫持：无状态核心的新攻击面
 
-The 2026-07-28 stateless rewrite removed protocol-level sessions, so a server that needs cross-request state now mints an explicit handle (a cart ID, a workflow ID) and returns it as an ordinary tool argument. The revised security best-practices document names the resulting attack: **state-handle hijacking**, where an unauthorized party obtains or guesses a handle and uses it to read or modify another user's state.
+2026-07-28 无状态重写从协议层面移除了会话，因此需要跨请求状态的服务器现在会生成一个显式句柄（购物车 ID、工作流 ID）并将其作为普通工具参数返回。修订后的安全最佳实践文档命名了由此产生的攻击：**状态句柄劫持**，即未授权方获取或猜出句柄，并用它来读取或修改另一用户的状态。
 
-The requirements follow directly, and they are worth memorizing because the failure mode is silent:
+要求直接明了，值得牢记，因为故障模式是静默的：
 
-- A server implementing authorization **must verify every inbound request** and **must not treat possession of a state handle as authentication**. A handle is a name, not a credential.
-- Handles **should be non-deterministic**, drawn from a secure random number generator.
-- Handles **should be bound server-side to the authenticated user**, for example by keying state as `<user_id>:<handle>` where the user ID derives from the verified token rather than from anything the client sends.
+- 实现授权的服务器**必须验证每个入站请求**，并**不得将拥有状态句柄视为认证**。句柄是名称，不是凭证。
+- 句柄**应是非确定性的**，从安全的随机数生成器中提取。
+- 句柄**应在服务端与已认证用户绑定**，例如通过将状态键设为 `<user_id>:<handle>`，其中用户 ID 来自已验证的令牌，而非客户端发送的任何内容。
 
-The reason this matters more than it sounds: in the stateful era the session itself carried identity, so a sloppy server accidentally got some isolation for free. Statelessly, nothing is free. Every request must re-establish who is asking before the handle means anything.
+这一点比听起来更重要：在有状态时代，会话本身携带身份，因此一个草率的服务器意外获得了一些免费隔离。在无状态模式下，没有什么是免费的。每个请求都必须先重新确认是谁在询问，句柄才有意义。
 
-**How bad is the field today?** The first large-scale dynamic audit of internet-facing MCP servers (arXiv 2608.00150, July 31, 2026) discovered over 21,000 publicly reachable instances, confirmed 640 as production, and dynamically tested 414 of them. It found **91.8% had no OAuth authentication at all**, and 687 tool instances exposed uncontrolled shell execution. Treat any MCP server reachable from the public internet as needing an authorization review before it needs a feature.
+**当前领域状况有多糟？** 首次面向互联网的 MCP 服务器大规模动态审计（arXiv 2608.00150，2026 年 7 月 31 日）发现了超过 21,000 个公开可达实例，确认其中 640 个为生产环境，并对其中 414 个进行了动态测试。结果发现 **91.8% 完全没有 OAuth 认证**，687 个工具实例暴露了不受控的 shell 执行。应将任何可从公共互联网访问的 MCP 服务器视为在考虑功能之前就需要进行授权审查的对象。
 
-The advisory flow since then confirms it. Between August 15 and October 1, 2026 the GitHub Advisory Database published 73 reviewed advisories with MCP in the title (9 critical), led by arbitrary file read, write, or path traversal (about 24), authentication or authorization bypass (about 20), SSRF, and DNS rebinding or missing Origin checks (8). The popular community **mcp-atlassian** server (Jira and Confluence) took 25 on one day, September 22 (fixed in 0.22.0): the critical one (CVE-2026-77244) was an HTTP-transport token verifier that accepted any non-empty string, and several `upload_attachment` flaws read arbitrary server-local files and exfiltrated them as Jira or Confluence attachments. IBM's ContextForge sandbox server (CVE-2026-53710, CVSS 10.0, fixed in 1.0.2) showed that a regex-guarded Python sandbox is not a sandbox: dunder names built at runtime walked the class hierarchy to `subprocess.Popen` through the `execute_code` tool. Four rules fall out: verify tokens cryptographically, never by presence; treat upload and attachment tools as exfiltration channels; allowlist arguments, not executables; and give containers an egress policy, not just isolation.
+此后的安全公告证实了这一点。在 2026 年 8 月 15 日至 10 月 1 日期间，GitHub 安全公告数据库发布了 73 条经审核的 MCP 相关公告（9 条严重），主要涉及任意文件读取、写入或路径遍历（约 24 条），认证或授权绕过（约 20 条），SSRF，以及 DNS 重绑定或缺少 Origin 检查（8 条）。热门社区 **mcp-atlassian** 服务器（Jira 和 Confluence）在 9 月 22 日一天内收到了 25 条（在 0.22.0 中修复）：其中严重的一条（CVE-2026-77244）是 HTTP 传输的令牌验证器接受任何非空字符串，以及多个 `upload_attachment` 缺陷读取任意服务器本地文件并将其作为 Jira 或 Confluence 附件泄露。IBM 的 ContextForge 沙盒服务器（CVE-2026-53710，CVSS 10.0，在 1.0.2 中修复）表明，受正则表达式保护的 Python 沙盒并非真正的沙盒：运行时构建的双下划线名称通过类层次结构走到 `subprocess.Popen`，利用了 `execute_code` 工具。由此得出四条规则：以加密方式验证令牌，绝不能仅凭存在性验证；将上传和附件工具视为泄露渠道；对参数进行允许列表，而非对可执行文件；给容器设置出站策略，而不仅仅是隔离。
 
-### OAuth Mix-Up: The Multi-Server Client Is the Confused Deputy
+### OAuth 混淆：多服务器客户端成为困惑副手
 
-On September 28 and 30, 2026 the official SDKs published advisories for an authorization-server mix-up (TypeScript CVE-2026-104850 / GHSA-6qxp-vccf-f47h and Python GHSA-qx49-fqc8-xw99, both CVSS 7.5). The SDK OAuth clients let the MCP server decide which authorization server received the client's credentials, so a malicious or compromised server could name its own authorization server and, with no user interaction, receive stored refresh tokens, client secrets, or a bundled provider's signed assertion. Fixed in TypeScript 1.31.0 / 2.2.0 and Python 1.30.0 / 2.2.0, but upgrading is not the whole fix:
+2026 年 9 月 28 日和 30 日，官方 SDK 发布了关于授权服务器混淆的公告（TypeScript CVE-2026-104850 / GHSA-6qxp-vccf-f47h 和 Python GHSA-qx49-fqc8-xw99，均为 CVSS 7.5）。SDK 的 OAuth 客户端让 MCP 服务器决定哪个授权服务器接收客户端的凭证，因此恶意或被入侵的服务器可以指定自己的授权服务器，并在无需用户交互的情况下接收存储的刷新令牌、客户端密钥或捆绑提供者的签名断言。已在 TypeScript 1.31.0 / 2.2.0 和 Python 1.30.0 / 2.2.0 中修复，但升级并非完整解决方案：
 
-- Machine-to-machine providers (client credentials, private-key JWT, cross-app access) must be given the expected issuer explicitly (`expectedIssuer`; Python `issuer=`, required in 3.0).
-- Credentials persisted before the upgrade carry no issuer and stay exposed until they are tagged or cleared.
-- New interactive sign-ins still go to whatever authorization server the MCP server names. The spec's RFC 9207 `iss` validation catches a swapped authorization response, but on its own it does not stop a client from sending stored credentials to a server-chosen issuer.
+- 机器对机器提供者（客户端凭证、私钥 JWT、跨应用访问）必须显式给出预期的发行方（`expectedIssuer`；Python 中为 `issuer=`，在 3.0 中必需）。
+- 升级前持久化的凭证没有携带发行方信息，在被打标或清除之前仍然暴露。
+- 新的交互式登录仍然会前往 MCP 服务器指定的任何授权服务器。规范的 RFC 9207 `iss` 验证可以捕获被交换的授权响应，但仅凭它无法阻止客户端将存储的凭证发送到服务器选择的发行方。
 
-The design rule: **bind every credential to its issuer, and never let a resource server choose where secrets go.**
+设计规则：**将每个凭证与其发行方绑定，绝不能让资源服务器决定秘密的去向。**
 
-### SDK Defaults and Per-Tool Authorization
+### SDK 默认值与逐工具授权
 
-**Limits the SDKs now enforce by default.** A cluster of denial-of-service fixes (August 19 to September 30) changed defaults worth copying to any MCP endpoint: TypeScript 2.1.0 and Python cap request bodies at 4 MiB (HTTP 413) and TypeScript caps JSON-RPC batches at 100; Python 1.30.0 and 2.2.0 close legacy stateful sessions idle for 30 minutes and cap a server at 10,000 sessions (503 beyond), after CVE-2026-59951 showed unreclaimed stateful sessions exhausting memory; Go 1.8.0 bounds JSON nesting, SSE event size, and stdio line length. The client is attackable too: Python's client fetched any `$ref` in a server-declared `outputSchema` synchronously with no timeout (GHSA-rwrf-2pqf-9j8j), enabling SSRF and local file reads. Per-session server state is a DoS surface, which is the operational argument for the stateless revision, and tool output schemas are attacker-controlled input to the client.
+**SDK 现在默认强制执行的限制。** 一系列拒绝服务修复（8 月 19 日至 9 月 30 日）改变了值得复制到任何 MCP 端点的默认值：TypeScript 2.1.0 和 Python 将请求体限制在 4 MiB（HTTP 413），TypeScript 将 JSON-RPC 批量请求限制在 100 个；Python 1.30.0 和 2.2.0 关闭空闲 30 分钟的传统有状态会话，并将服务器会话上限设为 10,000（超出返回 503），因为 CVE-2026-59951 表明未被回收的有状态会话会耗尽内存；Go 1.8.0 限制 JSON 嵌套、SSE 事件大小和 stdio 行长度。客户端也可能受到攻击：Python 客户端同步获取服务器声明的 `outputSchema` 中的任何 `$ref` 且没有超时（GHSA-rwrf-2pqf-9j8j），从而启用 SSRF 和本地文件读取。每会话服务器状态是一个 DoS 面，这是无状态修订的操作论据，而工具输出模式是攻击者控制的对客户端的输入。
 
-**Per-tool authorization ahead of the spec.** The TypeScript server 2.1.0 (September 23) adds request-time scope challenges per tool, resource, and prompt (`requireScopes`), answering HTTP 403 `insufficient_scope` before the handler runs, and the TypeScript client 2.1.0 adds DPoP sender-constrained tokens (RFC 9449, following draft SEP-1932), so a stolen bearer token alone is not enough.
+**领先于规范的逐工具授权。** TypeScript 服务器 2.1.0（9 月 23 日）为每个工具、资源和提示添加了请求时范围挑战（`requireScopes`），在处理程序运行前响应 HTTP 403 `insufficient_scope`，TypeScript 客户端 2.1.0 添加了 DPoP 发送方约束令牌（RFC 9449，遵循草案 SEP-1932），因此仅窃取持有者令牌是不够的。
 
-### Defense-in-Depth Checklist for Production MCP
+### MCP 生产纵深防御检查清单
 
-- All remote MCP servers run behind OAuth 2.1 with PKCE and audience-bound tokens (RFC 8707), and verify signature, issuer, and audience on every request.
-- Clients bind every stored credential to its issuer and refuse to send it to an authorization server the MCP server names.
-- Write-capable and sensitive tools demand step-up scopes (403 `insufficient_scope`); high-value deployments use DPoP-bound tokens.
-- Local HTTP servers bind to loopback and validate `Origin` and `Host`; request bodies are capped (4 MiB) and server sessions are capped and reclaimed.
-- STDIO servers run inside a container with `network: none`, read-only root filesystem, no host volume mounts, and a `nproc` and `memory` cap; their launch commands are allowlisted with arguments.
-- Every tool invocation is logged with user identity, bound token audience, tool name, argument hash, and result hash. Logs ship to an append-only store.
-- A rate limiter sits in front of every MCP server, scoped by user identity. Burst budgets are tight for write-capable tools.
-- Tool arguments pass through a content filter before reaching the server: pattern-based prompt-injection detection on string fields, schema validation on structured fields, hard rejection for shell metacharacters in tools that do not need them.
-- Tool results pass through an output validator before being fed back to the model: PII detection, secret detection, size cap, content filter for known exfiltration markers.
-- Dangerous tools (file write, shell execution, outbound HTTP) require a human approval step or a signed capability token rather than relying on the model to call them safely.
+- 所有远程 MCP 服务器在 OAuth 2.1 背后运行，使用 PKCE 和受众绑定令牌（RFC 8707），并在每次请求时验证签名、发行方和受众。
+- 客户端将每个存储的凭证与其发行方绑定，并拒绝将其发送到 MCP 服务器指定的授权服务器。
+- 可写和敏感工具要求阶梯式范围（403 `insufficient_scope`）；高价值部署使用 DPoP 绑定令牌。
+- 本地 HTTP 服务器绑定到回环地址并验证 `Origin` 和 `Host`；请求体有上限（4 MiB），服务器会话有上限并被回收。
+- STDIO 服务器在容器内运行，配置为 `network: none`，只读根文件系统，无主机卷挂载，并设置 `nproc` 和 `memory` 上限；其启动命令和参数被列入允许列表。
+- 每个工具调用都记录用户身份、绑定令牌受众、工具名称、参数哈希和结果哈希。日志发送到只追加存储。
+- 每个 MCP 服务器前都有速率限制器，按用户身份划分范围。对可写工具的突发预算要收紧。
+- 工具参数在到达服务器前通过内容过滤器：对字符串字段进行基于模式的提示注入检测，对结构化字段进行模式验证，对不需要 shell 元字符的工具进行硬拒绝。
+- 工具结果在反馈给模型前通过输出验证器：PII 检测、密钥检测、大小上限、已知泄露标记的内容过滤。
+- 危险工具（文件写入、shell 执行、出站 HTTP）需要人工审批步骤或签名能力令牌，而不是依赖模型安全调用它们。
 
-Request flow with all defensive layers:
+包含所有防御层的请求流程：
 
 ```mermaid
 flowchart TD
-    A[User request to agent] --> B[OAuth 2.1 token check]
-    B -->|invalid| X[Reject 401]
-    B -->|valid| C[Rate limiter per identity]
-    C -->|over budget| Y[Reject 429]
-    C -->|ok| D[Tool argument content filter]
-    D -->|injection or malformed| Z[Reject and log]
-    D -->|clean| E[MCP server in sandbox]
-    E --> F[Tool execution]
-    F --> G[Result output validator]
-    G -->|PII or secret| W[Redact and log]
-    G -->|clean| H[Append-only audit log]
-    H --> I[Return result to model]
+    A[用户请求到智能体] --> B[OAuth 2.1 令牌检查]
+    B -->|无效| X[拒绝 401]
+    B -->|有效| C[按身份的速率限制器]
+    C -->|超出预算| Y[拒绝 429]
+    C -->|正常| D[工具参数内容过滤器]
+    D -->|注入或格式错误| Z[拒绝并记录]
+    D -->|干净| E[沙盒中的 MCP 服务器]
+    E --> F[工具执行]
+    F --> G[结果输出验证器]
+    G -->|PII 或密钥| W[脱敏并记录]
+    G -->|干净| H[只追加审计日志]
+    H --> I[将结果返回给模型]
 ```
 
-The pipeline is deliberately conservative. Every layer can reject; only the result that survives all five gates reaches the model.
+该流程故意设计得保守。每一层都可以拒绝；只有通过了全部五道关卡的结果才会到达模型。
 
-**Sources for this section:**
-- [A2A v1.0.1 release](https://github.com/a2aproject/A2A/releases/tag/v1.0.1) and [A2A joins AAIF](https://aaif.io/blog/a2a-joins-aaif)
-- [MCP roadmap](https://modelcontextprotocol.io/development/roadmap) and [The New MCP Roadmap (August 22, 2026)](https://blog.modelcontextprotocol.io/posts/mcp-roadmap/)
-- [MCP TypeScript SDK OAuth mix-up advisory (GHSA-6qxp-vccf-f47h)](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h)
-- [GitHub Advisory Database: reviewed MCP advisories](https://github.com/advisories?query=type%3Areviewed+mcp)
-- [RFC 8707: Resource Indicators for OAuth 2.0](https://www.rfc-editor.org/rfc/rfc8707)
-- [Adversa AI: Top MCP Security Resources May 2026](https://adversa.ai/blog/top-mcp-security-resources-may-2026/)
-- [Anthropic Constitutional Classifiers](https://www.anthropic.com/research/constitutional-classifiers)
+**本节来源：**
+- [A2A v1.0.1 发布](https://github.com/a2aproject/A2A/releases/tag/v1.0.1) 和 [A2A 加入 AAIF](https://aaif.io/blog/a2a-joins-aaif)
+- [MCP 路线图](https://modelcontextprotocol.io/development/roadmap) 和 [新版 MCP 路线图（2026 年 8 月 22 日）](https://blog.modelcontextprotocol.io/posts/mcp-roadmap/)
+- [MCP TypeScript SDK OAuth 混淆公告 (GHSA-6qxp-vccf-f47h)](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h)
+- [GitHub 安全公告数据库：已审核 MCP 公告](https://github.com/advisories?query=type%3Areviewed+mcp)
+- [RFC 8707：OAuth 2.0 的资源指示器](https://www.rfc-editor.org/rfc/rfc8707)
+- [Adversa AI：2026 年 5 月顶级 MCP 安全资源](https://adversa.ai/blog/top-mcp-security-resources-may-2026/)
+- [Anthropic 宪法分类器](https://www.anthropic.com/research/constitutional-classifiers)
 
 ---
 
-## Computer-Use Tools (Anthropic)
+## Computer-Use 工具（Anthropic）
 
-Anthropic shipped computer use as a beta with Claude 3.5 Sonnet in October 2024. It reached general availability on the Claude API on August 19, 2026 (Google Cloud on August 20; still beta on Bedrock, Claude Platform on AWS, and Foundry) as a client **toolset**, `computer_toolset_20260801`: one tools-array entry that expands into 17 member tools (screenshot, zoom, clicks, drag, typing, key presses, scroll, wait), with per-member configs and no beta header. Display size now comes from the screenshots you return; the older `name`, `display_width_px`, `display_height_px`, and `display_number` fields are rejected.
+Anthropic 于 2024 年 10 月随 Claude 3.5 Sonnet 以 beta 形式推出了 computer use。它于 2026 年 8 月 19 日在 Claude API 上达到通用可用性（Google Cloud 为 8 月 20 日；在 Bedrock、AWS 上的 Claude Platform 和 Foundry 上仍为 beta），作为一个客户端**工具集** `computer_toolset_20260801`：一个工具数组条目扩展为 17 个成员工具（截图、缩放、点击、拖拽、输入、按键、滚动、等待），带有每个成员的配置且无需 beta 请求头。显示大小现在来自你返回的截图；较旧的 `name`、`display_width_px`、`display_height_px` 和 `display_number` 字段已被拒绝。
 
-| Tool | Capability | Notes |
+| 工具 | 能力 | 说明 |
 |------|------------|-------|
-| `bash` (`bash_20250124`) | Run shell commands | Persistent session across turns |
-| `text_editor` (`text_editor_20250728`, name `str_replace_based_edit_tool`) | Read, create, and edit files | `view`, `create`, `str_replace`, `insert` |
-| `computer_toolset_20260801` | Mouse, keyboard, screenshot, zoom | 17 members; batch actions; GA on Claude API and Google Cloud |
-| `browser_toolset_20260801` | Drive a browser your application hosts | 31 members (4 opt-in); targets accessibility-tree element refs as well as pixels; Claude API and Google Cloud only |
+| `bash` (`bash_20250124`) | 运行 shell 命令 | 跨轮次的持久会话 |
+| `text_editor` (`text_editor_20250728`，名称 `str_replace_based_edit_tool`) | 读取、创建和编辑文件 | `view`、`create`、`str_replace`、`insert` |
+| `computer_toolset_20260801` | 鼠标、键盘、截图、缩放 | 17 个成员；批量操作；在 Claude API 和 Google Cloud 上 GA |
+| `browser_toolset_20260801` | 驱动你的应用托管的浏览器 | 31 个成员（4 个可选加入）；以无障碍树元素引用和像素为目标；仅限 Claude API 和 Google Cloud |
 
 ```python
 import anthropic
 
 client = anthropic.Anthropic()
 
-response = client.messages.create(  # GA: no beta namespace or beta header
+response = client.messages.create(  # GA: 无 beta 命名空间或 beta 请求头
     model="claude-opus-5-5",
     max_tokens=4096,
     tools=[
-        {"type": "computer_toolset_20260801"},  # display size comes from your screenshots
+        {"type": "computer_toolset_20260801"},  # 显示大小来自你的截图
         {"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"},
         {"type": "bash_20250124", "name": "bash"},
     ],
-    messages=[{"role": "user", "content": "Open Firefox, go to GitHub, and clone my repo."}],
+    messages=[{"role": "user", "content": "打开 Firefox，访问 GitHub，并克隆我的仓库。"}],
 )
 ```
 
-**Migration trap:** Claude Opus 5.5 and Sonnet 5.5 return HTTP 400 for the older `computer_20251124` tool on the Claude API and Google Cloud (Bedrock still accepts it), and samples that target `claude-3-7-sonnet-20250219` or `claude-sonnet-4-20250514` point at retired models.
+**迁移陷阱：** Claude Opus 5.5 和 Sonnet 5.5 在 Claude API 和 Google Cloud 上返回 HTTP 400（Bedrock 仍接受），针对较旧的 `computer_20251124` 工具，而针对 `claude-3-7-sonnet-20250219` 或 `claude-sonnet-4-20250514` 的示例指向已退役的模型。
 
-**Batch actions move the human gate.** Claude can now return several computer `tool_use` blocks in one turn. The executor runs them in order and halts at the first failure, answering each later block with `is_error` and "Not executed: an earlier computer action in this turn failed." One model round trip can therefore complete a multistep consequential action, which cuts per-step latency and cost but means a confirmation placed between model turns arrives too late. Anthropic's docs put the human check before each block runs: inspect every action in the batch when it arrives, and pause before each consequential one executes, including one in the middle of a batch. Treat a rejection like a failure: return `is_error` for that block, answer the rest of the batch with the halt text, and let the model replan.
+**批量操作移动了人工关卡。** Claude 现在可以在一轮中返回多个 computer `tool_use` 块。执行器按顺序运行它们，并在第一次失败时停止，对每个后续块返回 `is_error` 和 "未执行：本轮中较早的 computer 操作已失败。" 因此，一个模型往返可以完成多步重要操作，这降低了每步延迟和成本，但意味着放置在模型轮次之间的确认来得太迟。Anthropic 的文档要求在每个块运行前进行人工检查：在批处理到达时检查每个操作，并在执行每个重要操作前暂停，包括批处理中间的。将拒绝视为失败：为该块返回 `is_error`，用停止文本回答批处理的其余部分，并让模型重新规划。
 
-**Element refs are the reliability lever for web tasks.** In the browser toolset, `read_page` returns the accessibility tree with references such as `[ref_2]`, and clicks, form input, and uploads can target refs instead of coordinates. Refs survive layout shifts but are scoped to a tab and go stale after navigation. Anthropic scans returned page text and screenshots for prompt injection, and its security guidance doubles as a least-privilege checklist: a fresh browser profile with no credentials, a network-layer domain allowlist that blocks loopback, link-local, and private ranges, http/https URLs only, and the opt-in members (`javascript_exec`, `file_upload`, `read_console`, `read_network`) left off unless the task needs them.
+**元素引用是 web 任务的可靠性杠杆。** 在浏览器工具集中，`read_page` 返回带有引用的无障碍树，例如 `[ref_2]`，点击、表单输入和上传可以以引用而非坐标为目标。引用在布局变化后仍然存在，但范围限定在一个标签页内，导航后会失效。Anthropic 扫描返回的页面文本和截图中的提示注入，其安全指导同时作为最小权限检查清单：一个不带凭证的全新浏览器配置文件、一个阻止回环、链路本地和私有范围的网络层域名允许列表、仅限 http/https URL，以及除非任务需要否则关闭的可选成员（`javascript_exec`、`file_upload`、`read_console`、`read_network`）。
 
-**Production safety rules for computer-use:**
-1. Always run in a sandboxed VM (Docker + VNC, or E2B cloud)
-2. Screenshot-validate critical state before destructive actions
-3. Use HITL (Human-in-the-Loop) for irreversible actions (file deletion, form submission), checked before each such action executes, even mid-batch
-4. Cap runaway loops in the harness, not the model: a maximum iteration count plus a spend ceiling enforced outside the agent (Claude Managed Agents sessions accept a hard budget that pauses with `budget_reached`). Anthropic's docs estimate roughly 1,000 to 1,800 input tokens per screenshot, so long sessions are input-dominated; resize screenshots to 2000 px or less per side, or keep 20 or fewer images per request
+**Computer-use 生产安全规则：**
+1. 始终在沙盒化 VM 中运行（Docker + VNC，或 E2B 云）
+2. 在破坏性操作前通过截图验证关键状态
+3. 对不可逆操作（文件删除、表单提交）使用 HITL（人在回路），在每个此类操作执行前进行检查，即使在批处理中间
+4. 在工具链而非模型中限制失控循环：最大迭代次数加上在智能体外部强制执行的支出上限（Claude Managed Agents 会话接受在达到 `budget_reached` 时暂停的硬预算）。Anthropic 的文档估计每张截图大约需要 1,000 到 1,800 个输入令牌，因此长会话以输入为主；将截图调整为每边 2000 像素或更小，或每次请求保留 20 张或更少的图片
 
 ---
 
-## Context7: Live Documentation MCP
+## Context7：实时文档 MCP
 
-One of the most practical MCP servers in 2026 is **Context7**. It resolves the "stale training data" problem for coding agents:
+2026 年最实用的 MCP 服务器之一是 **Context7**。它解决了编码智能体的"过时训练数据"问题：
 
 ```
-# Without Context7:
-Agent: "I'll use langchain's `create_openai_tools_agent` function..."
-(This API is from the 0.x line; LangChain is on 1.x)
+# 没有 Context7：
+Agent: "我将使用 langchain 的 `create_openai_tools_agent` 函数..."
+（此 API 来自 0.x 系列；LangChain 已升级到 1.x）
 
-# With Context7 MCP:
+# 使用 Context7 MCP：
 Agent -> MCP: resolve-library-id("langchain")
 Agent -> MCP: query-docs(library_id, "create an agent with tools")
-MCP -> Agent: Returns current 1.x docs
-Agent: "I'll use the 1.x `create_agent` API..."
+MCP -> Agent: 返回当前 1.x 文档
+Agent: "我将使用 1.x 的 `create_agent` API..."
 ```
 
-**Setup as a remote server (Claude Code `.mcp.json`):**
+**设置为远程服务器（Claude Code `.mcp.json`）：**
 ```json
 {
   "mcpServers": {
@@ -602,58 +602,58 @@ Agent: "I'll use the 1.x `create_agent` API..."
 }
 ```
 
-Context7 also ships a guided installer (`npx ctx7 setup`) that creates the API key and configures the coding agent. Its two tools are `resolve-library-id` and `query-docs`; the agent calls them before writing code against a library whose API may have changed since the model's training cutoff. The shift from a local `npx` stdio server to a hosted HTTP endpoint with a bearer key is the same local-to-remote move the whole ecosystem is making.
+Context7 还提供了一个引导式安装程序（`npx ctx7 setup`），用于创建 API 密钥并配置编码智能体。它的两个工具是 `resolve-library-id` 和 `query-docs`；智能体在针对自模型训练截止日期以来 API 可能已更改的库编写代码之前调用它们。从本地 `npx` stdio 服务器到带有持有者密钥的托管 HTTP 端点的转变，是整个生态系统正在进行的相同本地到远程迁移。
 
 ---
 
-## Interview Questions
+## 面试问题
 
-### Q: How does MCP solve the "Too Many Tools" problem (Schema Overload)?
+### 问：MCP 如何解决"工具过多"问题（模式过载）？
 
-**Strong answer:**
-MCP itself does not solve it. The protocol supplies the catalog (`tools/list`, which since 2026-07-28 must declare `ttlMs` and `cacheScope` so clients can cache it), and the client decides what the model sees. In 2023, loading 50 schemas degraded tool selection and burned context. The current answer has three parts. First, **deferred loading and tool search**: keep most tools out of the prompt, let the model search the catalog, and load a schema only when it is needed. Cursor reported (vendor figures) that moving MCP tools into dynamic context cut total tokens by 46.9% in sessions that called an MCP tool, because most tools are needed in a minority of conversations. Second, **cache-preserving changes**: adding a tool used to invalidate the prompt cache from that point, so dynamic loading fought caching. Anthropic's `inline-tools-2026-09-15` beta adds tools in a mid-conversation system message without busting the cache, and can pin a fetched MCP tool list so a server cannot swap definitions mid-session. Third, **server-side progressive discovery**, which the August 22 MCP roadmap lists as an experimental priority for catalogs in the thousands. Past roughly 30 tools I also split the surface by subagent or skill so each context carries only what it needs.
+**优秀回答：**
+MCP 本身并不解决这个问题。协议提供目录（`tools/list`，自 2026-07-28 起必须声明 `ttlMs` 和 `cacheScope` 以便客户端缓存），由客户端决定模型看到什么。2023 年，加载 50 个模式会降低工具选择能力并消耗上下文。当前的答案分为三部分。首先，**延迟加载和工具搜索**：将大多数工具保留在提示之外，让模型搜索目录，仅在需要时加载模式。Cursor 报告（供应商数据）将 MCP 工具移入动态上下文后，调用 MCP 工具的会话总令牌数减少了 46.9%，因为大多数工具只在少数对话中需要。其次，**保留缓存的更改**：添加工具过去会使该点之后的提示缓存失效，因此动态加载与缓存冲突。Anthropic 的 `inline-tools-2026-09-15` beta 在不破坏缓存的情况下，通过会话中期的系统消息添加工具，并且可以固定获取的 MCP 工具列表，使服务器无法在中途交换定义。第三，**服务端渐进式发现**，8 月 22 日 MCP 路线图将其列为针对数千个目录的实验性优先事项。超过大约 30 个工具时，我还会按子智能体或技能拆分界面，使每个上下文只携带它需要的内容。
 
-### Q: Why is it important to separate "Tool Logic" from the "Agent App" using MCP servers?
+### 问：为什么使用 MCP 服务器将"工具逻辑"与"智能体应用"分离很重要？
 
-**Strong answer:**
-Separation of concerns. If the tool logic (e.g., a Python scraper) lives in a separate MCP server, I can scale the scraping infrastructure independently of the LLM orchestrator. More importantly, it provides a **Security Sandbox**. If a model tries to perform an injection through a tool argument, it only affects the MCP server process, which can be containerized with zero network access to the core Agent state. The boundary cuts both ways, though: the 2026 advisories (OAuth mix-up, `outputSchema` `$ref` SSRF in the Python client) show the client must also treat every server as untrusted input.
+**优秀回答：**
+关注点分离。如果工具逻辑（例如 Python 爬虫）位于单独的 MCP 服务器中，我可以独立于 LLM 编排器扩展爬虫基础设施。更重要的是，它提供了一个**安全沙盒**。如果模型试图通过工具参数进行注入，它只影响 MCP 服务器进程，该进程可以被容器化，对核心智能体状态具有零网络访问权限。边界是双向的：2026 年的公告（OAuth 混淆、Python 客户端中的 `outputSchema` `$ref` SSRF）表明客户端也必须将每个服务器视为不受信任的输入。
 
-### Q: How do MCP and A2A work together in a production multi-agent system?
+### 问：MCP 和 A2A 如何在生产多智能体系统中协同工作？
 
-**Strong answer:**
-They address **different communication layers**. MCP is the agent-to-tool protocol: it gives any agent standardized access to databases, APIs, and files through MCP servers. A2A is the agent-to-agent protocol: it enables an orchestrator agent (from Vendor X) to delegate a task to a specialist agent (from Vendor Y) without sharing memory or context. In production, I use MCP for every tool connection and A2A when I need cross-vendor agent coordination. For example, a procurement orchestrator built on LangGraph uses MCP to query an inventory database, then sends an A2A `SendMessage` to a compliance agent hosted by a different team, which decides whether to open a long-running task. The key design principle is: MCP within an agent's own tool stack, A2A across organizational or vendor boundaries. Both now sit under the Agentic AI Foundation, which answers the "who controls the protocols we are betting on" governance question better than a single-vendor spec would.
+**优秀回答：**
+它们处理**不同的通信层**。MCP 是智能体到工具的协议：它通过 MCP 服务器为任何智能体提供对数据库、API 和文件的标准化访问。A2A 是智能体到智能体的协议：它使来自供应商 X 的编排器智能体能够将任务委托给来自供应商 Y 的专业智能体，而无需共享内存或上下文。在生产中，我对每个工具连接使用 MCP，在需要跨供应商智能体协调时使用 A2A。例如，基于 LangGraph 构建的采购编排器使用 MCP 查询库存数据库，然后发送 A2A `SendMessage` 到由不同团队托管的合规智能体，由其决定是否开启长期任务。关键设计原则是：在智能体自己的工具栈内使用 MCP，跨组织或供应商边界使用 A2A。两者现在都隶属于 Agentic AI Foundation，这比单一供应商规范更好地回答了"谁控制我们正在押注的协议"这一治理问题。
 
-### Q: Your agent connects to a dozen third-party MCP servers over OAuth. How do you stop one malicious server from stealing credentials meant for the others?
+### 问：你的智能体通过 OAuth 连接到十几个第三方 MCP 服务器。如何阻止一个恶意服务器窃取为其他服务器准备的凭证？
 
-**Strong answer:**
-This is the OAuth mix-up attack with the agent client as the confused deputy, and it was a live bug class in the official SDKs until late September 2026 (CVE-2026-104850 in TypeScript, GHSA-qx49-fqc8-xw99 in Python): the server could name its own authorization server and collect stored refresh tokens and client secrets. My controls:
+**优秀回答：**
+这是 OAuth 混淆攻击，智能体客户端充当困惑副手，在 2026 年 9 月下旬之前一直是官方 SDK 中的活跃漏洞类别（TypeScript CVE-2026-104850，Python GHSA-qx49-fqc8-xw99）：服务器可以指定自己的授权服务器并收集存储的刷新令牌和客户端密钥。我的控制措施：
 
-1. **Issuer binding.** Every stored refresh token, client secret, or signed assertion records the issuer it came from, and the client refuses to present it anywhere else, whatever the server's metadata says. For machine-to-machine providers I configure the expected issuer explicitly rather than discovering it.
-2. **Validate the authorization response.** Record the expected issuer before redirecting and check the RFC 9207 `iss` parameter on return; the 2026-07-28 spec requires this whenever the authorization server sends it.
-3. **Audience-bound, short-lived tokens** (RFC 8707), so a token one server does obtain cannot be replayed to its siblings, plus DPoP where supported so a stolen token is useless without the key.
-4. **An allowlist of acceptable authorization servers per MCP server**, held in a credential vault the model never sees.
-5. **Post-patch hygiene.** Upgrading the SDK did not protect credentials saved before the upgrade, so I would tag or wipe those and force re-consent.
+1. **发行方绑定。** 每个存储的刷新令牌、客户端密钥或签名断言都记录其来源的发行方，客户端拒绝将其呈现给任何其他位置，无论服务器的元数据怎么说。对于机器对机器提供者，我显式配置预期的发行方，而不是通过发现机制获取。
+2. **验证授权响应。** 在重定向前记录预期的发行方，并在返回时检查 RFC 9207 `iss` 参数；2026-07-28 规范要求在授权服务器发送时执行此操作。
+3. **受众绑定、短寿命令牌**（RFC 8707），因此一个服务器获取的令牌无法重放到其兄弟服务器，加上在支持的 DPoP，使窃取的令牌在没有密钥的情况下毫无用处。
+4. **每个 MCP 服务器的可接受授权服务器允许列表**，保存在模型永远看不到的凭证保险库中。
+5. **补丁后卫生。** 升级 SDK 并不能保护升级前保存的凭证，因此我会标记或清除这些凭证并强制重新同意。
 
-The principle: a resource server never gets to choose where secrets go.
-
----
-
-## References
-- Model Context Protocol. "Specification revision 2026-07-28: Changelog" (July 2026). https://modelcontextprotocol.io/specification/2026-07-28/changelog
-- Model Context Protocol. "Authorization" (revision 2026-07-28). https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
-- Model Context Protocol blog. "The New MCP Roadmap" (August 22, 2026). https://blog.modelcontextprotocol.io/posts/mcp-roadmap/
-- Model Context Protocol. "Skills extension overview" (September 2026). https://modelcontextprotocol.io/extensions/skills/overview
-- Model Context Protocol blog. "Enterprise-Managed Authorization" (June 2026). https://blog.modelcontextprotocol.io/posts/enterprise-managed-auth/
-- Anthropic. "The Model Context Protocol Specification" (2025)
-- A2A Project. "Agent2Agent Protocol Specification v1.0.1" (May 2026). https://github.com/a2aproject/A2A/releases/tag/v1.0.1
-- Agentic AI Foundation. "A2A joins AAIF's open agentic stack" (August 2026). https://aaif.io/blog/a2a-joins-aaif
-- Linux Foundation. "Agent2Agent Protocol Project" (2025)
-- AIR Security. "Plugin4Shell" (September 2026). https://www.air.security/blog-posts/plugin4shell
-- Anthropic. "Computer use tool" documentation. https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
-- NIST. "AI Agent Standards Initiative" (Feb 2026)
-- JSON-RPC 2.0 Specification.
-- Pydantic Documentation.
+原则：资源服务器永远无权决定秘密的去向。
 
 ---
 
-*Next: [Multi-Agent Orchestration](04-multi-agent-orchestration.md)*
+## 参考文献
+- Model Context Protocol. "规范修订 2026-07-28：变更日志" (2026 年 7 月). https://modelcontextprotocol.io/specification/2026-07-28/changelog
+- Model Context Protocol. "授权" (修订 2026-07-28). https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
+- Model Context Protocol 博客. "新版 MCP 路线图" (2026 年 8 月 22 日). https://blog.modelcontextprotocol.io/posts/mcp-roadmap/
+- Model Context Protocol. "技能扩展概述" (2026 年 9 月). https://modelcontextprotocol.io/extensions/skills/overview
+- Model Context Protocol 博客. "企业托管授权" (2026 年 6 月). https://blog.modelcontextprotocol.io/posts/enterprise-managed-auth/
+- Anthropic. "模型上下文协议规范" (2025)
+- A2A Project. "Agent2Agent 协议规范 v1.0.1" (2026 年 5 月). https://github.com/a2aproject/A2A/releases/tag/v1.0.1
+- Agentic AI Foundation. "A2A 加入 AAIF 的开放智能体栈" (2026 年 8 月). https://aaif.io/blog/a2a-joins-aaif
+- Linux Foundation. "Agent2Agent 协议项目" (2025)
+- AIR Security. "Plugin4Shell" (2026 年 9 月). https://www.air.security/blog-posts/plugin4shell
+- Anthropic. "Computer use 工具" 文档. https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+- NIST. "AI 智能体标准倡议" (2026 年 2 月)
+- JSON-RPC 2.0 规范.
+- Pydantic 文档.
+
+---
+
+*下一篇：[多智能体编排](04-multi-agent-orchestration.md)*

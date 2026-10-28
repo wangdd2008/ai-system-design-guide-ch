@@ -1,188 +1,188 @@
-# Multi-Agent Orchestration
+# 多智能体编排
 
-Complex systems are rarely one agent. They are teams of specialized agents. Orchestration has matured from "Blind Managers" to **Hierarchical Supervisors**, **Dynamic Swarms**, and **Cross-Vendor Agent Networks** enabled by interoperability protocols like A2A. Gartner projected in August 2025 that 40% of enterprise applications will feature task-specific AI agents by the end of 2026, up from less than 5% in 2025.
+复杂系统很少由单一智能体构成。它们是由专业智能体组成的团队。编排已从"盲目管理者"发展为**层级监督者**、**动态集群**和由 A2A 等互操作性协议支持的**跨供应商智能体网络**。Gartner 在 2025 年 8 月预测，到 2026 年底，40% 的企业应用将包含任务特定的 AI 智能体，而 2025 年这一比例不到 5%。
 
-## Table of Contents
+## 目录
 
-- [Why Multi-Agent?](#why-multi-agent)
-- [The Supervisor Pattern](#the-supervisor-pattern-hierarchical)
-- [Swarms (The OpenAI Pattern)](#swarms-the-openai-pattern)
-- [The Pipeline Pattern](#the-pipeline-pattern-workflows-as-code)
-- [Graph-Based Orchestration (2026 Dominant Pattern)](#graph-based-orchestration-2026-dominant-pattern)
-- [Cross-Vendor Agent Orchestration via A2A](#cross-vendor-agent-orchestration-via-a2a)
-- [The 2026 Framework Landscape for Multi-Agent](#the-2026-framework-landscape-for-multi-agent)
-- [State Management in Agent Teams](#state-management)
-- [Peer-to-Peer (P2P) Debate](#peer-to-peer-p2p-debate)
-- [Interview Questions](#interview-questions)
-- [References](#references)
-
----
-
-## Why Multi-Agent?
-
-A single agent with 50 tools experiences **Cognitive Load**.
-1. **Specialization**: A "Code Agent" can use a model optimized for Python, while a "Search Agent" uses a model optimized for RAG.
-2. **Parallelism**: Multiple agents can work on independent sub-tasks simultaneously.
-3. **Decoupled Evaluation**: You can evaluate the "Writer Agent" separately from the "Researcher Agent."
+- [为什么需要多智能体？](#why-multi-agent)
+- [监督者模式](#the-supervisor-pattern-hierarchical)
+- [集群（OpenAI 模式）](#swarms-the-openai-pattern)
+- [管道模式](#the-pipeline-pattern-workflows-as-code)
+- [基于图的编排（2026 年主导模式）](#graph-based-orchestration-2026-dominant-pattern)
+- [通过 A2A 的跨供应商智能体编排](#cross-vendor-agent-orchestration-via-a2a)
+- [2026 年多智能体框架格局](#the-2026-framework-landscape-for-multi-agent)
+- [智能体团队中的状态管理](#state-management)
+- [点对点（P2P）辩论](#peer-to-peer-p2p-debate)
+- [面试问题](#interview-questions)
+- [参考文献](#references)
 
 ---
 
-## The Supervisor Pattern (Hierarchical)
+## 为什么需要多智能体？
 
-The most common enterprise pattern as of 2026.
-
-- **The Supervisor**: A high-reasoning model (Claude Opus 5.5 or Fable 5.1, GPT-6 Astra or GPT-6.1 Sol) that decomposes the user prompt and delegates to workers.
-- **Workers**: Fast, cost-efficient models (Claude Sonnet 5.5 or Haiku 4.5, GPT-6 Luna, Gemini 3.8 Flash) that perform the work.
-- **Reviewer**: A separate agent that validates the consolidated output against the supervisor's original plan.
-
-**Architecture**: LangGraph remains the dominant framework for implementing these state-aware hierarchical loops. The Claude Agent SDK, Google ADK, and Microsoft Agent Framework all support this pattern natively as of 2026.
-
-**Re-check the tier split before you pay for it.** The price gap that justified cheap workers under an expensive supervisor has narrowed: Claude Sonnet 5.5, GPT-6 Sol, and GPT-6.1 Sol all list at $2/$10 per 1M tokens, Opus 5.5 dropped to $4/$20, and Anthropic's own (vendor-reported) agentic evals put Sonnet 5.5 within a few points of Opus 5.5. If the worker tier is nearly as capable and only 2x cheaper, the coordination overhead of a supervisor tree can cost more than it saves. Re-run the routing eval on each model generation.
-
-**The supervisor is now also a product.** Coding products and managed runtimes ship the coordinator for you: Cursor's Projects beta (September 10, 2026) has a coordinator agent plan the work and delegate to as many parallel subagents as needed, and Cursor reports (vendor figure, internal use) that new Projects users merge 30% more PRs; OpenAI's Agents API caps fan-out with `max_concurrent_subagents` (default 6); Claude Managed Agents adds an `advisor` entry to the multiagent roster that the primary thread can consult mid-turn. A platform-level concurrency cap is the budget control the supervisor pattern always needed, so set it deliberately rather than inheriting the default.
+拥有 50 个工具的单一智能体将面临**认知负荷**。
+1. **专业化**："代码智能体"可以使用为 Python 优化的模型，而"搜索智能体"使用为 RAG 优化的模型。
+2. **并行性**：多个智能体可以同时处理独立的子任务。
+3. **解耦评估**：你可以单独评估"写作智能体"，而不受"研究智能体"的影响。
 
 ---
 
-## Swarms (The OpenAI Pattern)
+## 监督者模式（层级式）
 
-Popularized by OpenAI's experimental Swarm library in late 2024 and carried into the OpenAI Agents SDK, **Swarms** focus on "Handoffs."
+截至 2026 年最常见的企业模式。
 
-- One agent "Hands off" the conversation to another.
-- **Key concept**: `Handoff(TargetAgent)`.
-- **Benefit**: No central "Manager" bottleneck. The conversation flows naturally between specialized entities.
+- **监督者**：一个高推理模型（Claude Opus 5.5 或 Fable 5.1，GPT-6 Astra 或 GPT-6.1 Sol），负责分解用户提示并委派给工作人员。
+- **工作人员**：快速、高性价比的模型（Claude Sonnet 5.5 或 Haiku 4.5，GPT-6 Luna，Gemini 3.8 Flash），负责执行工作。
+- **审核者**：一个单独的智能体，负责验证整合后的输出是否符合监督者的原始计划。
+
+**架构**：LangGraph 仍然是实现这些状态感知层级循环的主导框架。Claude Agent SDK、Google ADK 和 Microsoft Agent Framework 截至 2026 年都原生支持此模式。
+
+**在付费前重新检查层级划分。** 过去让廉价工人在昂贵监督者下干活的价差已经缩小：Claude Sonnet 5.5、GPT-6 Sol 和 GPT-6.1 Sol 均标价每百万 Token 2/10 美元，Opus 5.5 降至 4/20 美元，而且 Anthropic 自己的（供应商报告的）智能体评估显示 Sonnet 5.5 与 Opus 5.5 相差仅几个百分点。如果工人层级几乎同样有能力且仅便宜 2 倍，那么监督者树的协调开销可能比节省的成本还高。在每次模型换代时重新运行路由评估。
+
+**监督者现在也是一种产品。** 编码产品和托管运行时会为你提供协调器：Cursor 的 Projects beta（2026 年 9 月 10 日）让协调器智能体规划工作并委派给所需数量的并行子智能体，Cursor 报告（供应商数据，内部使用）新 Projects 用户合并的 PR 增加了 30%；OpenAI 的 Agents API 通过 `max_concurrent_subagents`（默认 6）限制扇出；Claude Managed Agents 在多智能体阵容中增加了一个 `advisor` 条目，主线程可以在轮次中咨询它。平台级别的并发上限是监督者模式一直需要的预算控制，因此要主动设置，而不是继承默认值。
 
 ---
 
-## The Pipeline Pattern (Workflows as Code)
+## 集群（OpenAI 模式）
 
-A pipeline fixes the stages in code and lets agents fill them: stage 1 gathers, stage 2 drafts, stage 3 verifies, with structured results passed between stages and explicit checkpoints. The model decides *how* to do each stage; the code decides *which* stages run and in what order.
+由 OpenAI 在 2024 年底推出的实验性 Swarm 库推广，并延续到 OpenAI Agents SDK，**集群**聚焦于"交接"。
 
-The distinction that matters is **who owns the control flow**:
+- 一个智能体将对话"交接"给另一个智能体。
+- **关键概念**：`Handoff(TargetAgent)`。
+- **优势**：没有中心"管理者"瓶颈。对话在专业实体之间自然流动。
 
-| Approach | Control flow owned by | Strength | Weakness | Shipping example (2026) |
+---
+
+## 管道模式（代码即工作流）
+
+管道在代码中固定阶段，让智能体填充它们：第一阶段收集，第二阶段起草，第三阶段验证，结构化结果在阶段之间传递，并设有明确的检查点。模型决定*如何*执行每个阶段；代码决定*哪些*阶段运行以及以什么顺序运行。
+
+关键区别在于**谁拥有控制流**：
+
+| 方法 | 控制流所有者 | 优势 | 劣势 | 2026 年实际示例 |
 |----------|----------------------|----------|----------|-------------------------|
-| **Workflow as code** | Your program | Deterministic, auditable, testable stages; human checkpoints at fixed points | Rigid when the task shape varies | GitHub Copilot dynamic workflows (public preview October 1): sequential or parallel stages, structured results between stages, subagents verifying each other, pauses for human review |
-| **Model-driven delegation** | A coordinator model | Adapts to tasks whose shape is unknown up front | Harder to bound cost and to audit | GitHub's `/fleet`, Cursor Projects |
-| **Cascade with a quality gate** | Code, with a model-scored gate | Cheap model drafts; escalate only when the gate fails | Gate calibration becomes the critical component | GitHub HydraFusion "cascade" mode (research preview September 30) |
+| **代码即工作流** | 你的程序 | 确定性、可审计、可测试的阶段；在固定点设置人工检查点 | 任务形状变化时过于僵化 | GitHub Copilot 动态工作流（10 月 1 日公开预览）：顺序或并行阶段，阶段之间的结构化结果，子智能体验证彼此，暂停等待人工审核 |
+| **模型驱动委派** | 协调器模型 | 适应 upfront 未知形状的任务 | 更难限制成本和审计 | GitHub 的 `/fleet`，Cursor Projects |
+| **带质量门限的级联** | 代码，带有模型评分的门限 | 廉价模型起草；仅在门限失败时升级 | 门限校准成为关键组件 | GitHub HydraFusion "级联"模式（9 月 30 日研究预览） |
 
-Use workflows-as-code when the stages are known and the audit trail matters; use model-driven delegation when they are not; and put a cascade in front of either when most inputs are easy.
+在阶段已知且审计追踪重要时使用代码即工作流；在阶段未知时使用模型驱动委派；在大多数输入都简单时，在两者前面加上级联。
 
 ---
 
-## Graph-Based Orchestration (2026 Dominant Pattern)
+## 基于图的编排（2026 年主导模式）
 
-The architectural momentum in 2026 has shifted decisively toward **graph-based orchestration**, where agent workflows are modeled as directed graphs with typed state.
+2026 年的架构 momentum 已果断转向**基于图的编排**，智能体工作流被建模为带有类型化状态的有向图。
 
-### Why Graphs Won
+### 为什么图赢了
 
-- **Explicit control flow**: Nodes are agents or functions; edges define transitions, including conditional branches and loops
-- **Visualizable**: Teams can inspect and debug the workflow as a diagram
-- **State-aware**: Typed state objects pass through the graph, enabling checkpointing and resumption
+- **显式控制流**：节点是智能体或函数；边定义转换，包括条件分支和循环
+- **可视化**：团队可以将工作流作为图表进行检查和调试
+- **状态感知**：类型化状态对象在图中传递，支持检查点和恢复
 
-### Framework Support
+### 框架支持
 
-| Framework | Graph Model | Key Differentiator |
+| 框架 | 图模型 | 关键差异化因素 |
 |-----------|-------------|-------------------|
-| **LangGraph** (~42.6k stars) | Imperative DAG with typed state | Most mature, broadest community |
-| **Google ADK** (~21.7k stars) | Graph workflows (2.x) with built-in A2A | Native Google Cloud integration; ADK TypeScript 2.0 deprecates Sequential, Parallel, and Loop agents in favor of graphs |
-| **Microsoft Agent Framework** | Workflow graphs (sequential, concurrent, handoff) | Unified .NET + Python, enterprise governance |
-| **Claude Agent SDK** | Supervisor-based hierarchical trees | Built-in tools (bash, editor), production-ready |
+| **LangGraph**（~42.6k 星） | 带有类型化状态的命令式 DAG | 最成熟，社区最广 |
+| **Google ADK**（~21.7k 星） | 带有内置 A2A 的图工作流（2.x） | 原生 Google Cloud 集成；ADK TypeScript 2.0 弃用顺序、并行和循环智能体，转而使用图 |
+| **Microsoft Agent Framework** | 工作流图（顺序、并发、交接） | 统一的 .NET + Python，企业治理 |
+| **Claude Agent SDK** | 基于监督者的层级树 | 内置工具（bash、编辑器），生产就绪 |
 
-### The Paperclip Pattern (Hierarchical Agents at Scale)
+### 回形针模式（大规模层级智能体）
 
-A notable 2026 development is **Paperclip** (44,900 GitHub stars within three weeks of its March 2026 launch). It uses a hierarchical model where a CEO agent receives a top-level goal, decomposes it, and delegates to manager agents who spawn and coordinate worker agents. This pattern demonstrates how deeply hierarchical multi-agent trees can handle complex real-world tasks.
-
----
-
-## Cross-Vendor Agent Orchestration via A2A
-
-The **Agent-to-Agent (A2A) protocol** (see [Tool Use and MCP](03-tool-use-and-mcp.md#agent-to-agent-protocol-a2a)) enables a new multi-agent pattern: **cross-vendor orchestration**. Before A2A, multi-agent systems required all agents to share the same framework and runtime. Now:
-
-1. **Agent Discovery**: An orchestrator finds specialist agents via their **Agent Cards** (JSON metadata describing capabilities, served at `/.well-known/agent-card.json`)
-2. **Task Delegation**: The orchestrator sends a message (`SendMessage`, over JSON-RPC, gRPC, or REST `POST /message:send`), and the remote agent decides whether to answer directly or open a task
-3. **Async Progress**: The remote agent streams status updates back; the orchestrator can delegate to other agents in parallel
-4. **Result Collection**: Final artifacts are returned and integrated into the orchestrator's state
-
-**Production example**: A procurement system where the orchestrator (LangGraph) delegates compliance checking to a specialized agent (Google ADK), inventory lookup to an MCP-connected tool, and contract generation to a CrewAI crew, all communicating via A2A and MCP respectively.
-
-**When several clients steer one remote task**, lost updates become the failure mode. The unreleased A2A v1.1 work adds a monotonically increasing `Task.generation` so clients can detect missed events and do compare-and-set (`if_generation_match`, rejected with HTTP 412 on a stale generation). Until it ships, serialize steering through one owner. A2A v1.0.1 (May 28, 2026) is the current spec release; A2A joined the Agentic AI Foundation in August 2026.
+2026 年一个值得注意的发展是 **Paperclip**（2026 年 3 月发布后三周内获得 44,900 个 GitHub 星）。它使用层级模型，CEO 智能体接收顶层目标，将其分解，并委派给经理智能体，经理智能体生成并协调工人智能体。此模式展示了深度层级多智能体树如何处理复杂的现实世界任务。
 
 ---
 
-## The 2026 Framework Landscape for Multi-Agent
+## 通过 A2A 的跨供应商智能体编排
 
-Every major AI lab now ships an agent framework. The multi-agent orchestration landscape as of October 2026 (star counts as of October 1):
+**Agent-to-Agent（A2A）协议**（参见[工具使用与 MCP](03-tool-use-and-mcp.md#agent-to-agent-protocol-a2a)）实现了一种新的多智能体模式：**跨供应商编排**。在 A2A 之前，多智能体系统要求所有智能体共享相同的框架和运行时。现在：
 
-| Framework | Provider | Multi-Agent Model | Status |
+1. **智能体发现**：编排器通过**智能体卡片**（描述能力的 JSON 元数据，位于 `/.well-known/agent-card.json`）发现专业智能体
+2. **任务委派**：编排器发送消息（`SendMessage`，通过 JSON-RPC、gRPC 或 REST `POST /message:send`），远程智能体决定直接回答还是开启任务
+3. **异步进度**：远程智能体流式返回状态更新；编排器可以并行委派给其他智能体
+4. **结果收集**：最终产出返回并整合到编排器的状态中
+
+**生产示例**：采购系统，其中编排器（LangGraph）将合规检查委派给专业智能体（Google ADK），库存查询委派给 MCP 连接的工具，合同生成委派给 CrewAI 团队，分别通过 A2A 和 MCP 通信。
+
+**当多个客户端控制一个远程任务时**，丢失更新成为故障模式。未发布的 A2A v1.1 工作添加了单调递增的 `Task.generation`，使客户端能够检测遗漏事件并执行 compare-and-set（`if_generation_match`，在过时 generation 上拒绝 HTTP 412）。在它发布之前，通过单一所有者串行化控制。A2A v1.0.1（2026 年 5 月 28 日）是当前规范版本；A2A 于 2026 年 8 月加入 Agentic AI Foundation。
+
+---
+
+## 2026 年多智能体框架格局
+
+每个主要 AI 实验室现在都推出了智能体框架。截至 2026 年 10 月的多智能体编排格局（星标数截至 10 月 1 日）：
+
+| 框架 | 提供商 | 多智能体模型 | 状态 |
 |-----------|----------|-------------------|--------|
-| **LangGraph** | LangChain | Graph-based, most flexible | Production; LangGraph 1.2.12 (~42.6k stars) |
-| **Claude Agent SDK** | Anthropic | Supervisor trees with built-in tools | GA (Python + TypeScript) |
-| **Google ADK** | Google | Graph workflows with A2A native support | Python 2.10.0, TypeScript 2.0.0, Go 2.0, Java 1.10.1 |
-| **Microsoft Agent Framework** | Microsoft | Workflows + group chat patterns, A2A and MCP interop | GA April 2, 2026; Python 1.19.0, .NET 1.23.0; AutoGen is in maintenance mode |
-| **OpenAI Agents SDK** | OpenAI | Handoff-based swarms with guardrails | Python 0.22.3 (~29.8k stars); Python + TypeScript |
-| **CrewAI** | CrewAI Inc. | Role-based crews with Flows | 1.15.23 (~59.3k stars; vendor claims 60%+ of Fortune 500) |
-| **Smolagents** | HuggingFace | Lightweight, open-source | 1.26.0 (May 29, 2026); no release since |
+| **LangGraph** | LangChain | 基于图，最灵活 | 生产环境；LangGraph 1.2.12（~42.6k 星） |
+| **Claude Agent SDK** | Anthropic | 带有内置工具的监督者树 | GA（Python + TypeScript） |
+| **Google ADK** | Google | 带有原生 A2A 支持的图工作流 | Python 2.10.0、TypeScript 2.0.0、Go 2.0、Java 1.10.1 |
+| **Microsoft Agent Framework** | Microsoft | 工作流 + 群聊模式，A2A 和 MCP 互操作 | 2026 年 4 月 2 日 GA；Python 1.19.0、.NET 1.23.0；AutoGen 处于维护模式 |
+| **OpenAI Agents SDK** | OpenAI | 基于交接的集群，带有护栏 | Python 0.22.3（~29.8k 星）；Python + TypeScript |
+| **CrewAI** | CrewAI Inc. | 基于角色的团队，带有 Flows | 1.15.23（~59.3k 星；供应商声称 60% 以上财富 500 强使用） |
+| **Smolagents** | HuggingFace | 轻量级，开源 | 1.26.0（2026 年 5 月 29 日）；此后无新版本 |
 
-**Key trend**: No single framework excels at all four multi-agent patterns (supervisor, swarm, pipeline, debate). Teams increasingly combine frameworks, e.g., LangGraph for complex orchestration with CrewAI for business-user-facing automations. The other trend is the managed runtime: OpenAI's Agents API, Claude Managed Agents, and Amazon Bedrock Managed Agents (preview) host the harness itself, which moves the build-versus-rent decision up a layer (see [Durable Execution](11-durable-execution.md)).
-
----
-
-## State Management
-
-The biggest challenge in multi-agent systems is the **Shared Blackboard**.
-
-1. **Local State**: Context only visible to a specific agent.
-2. **Global State**: Shared memory (e.g., the final draft) visible to all.
-3. **Write Conflicts**: When two agents try to modify the same Global State.
-   - **Best practice**: Use **Transactional Handoffs**. An agent can only write to the global state when it "Owns" the lock. Where locks are too coarse, use optimistic concurrency: version the state and reject writes against a stale version, the same compare-and-set idea A2A v1.1 applies to remote tasks.
+**关键趋势**：没有一个框架能在所有四种多智能体模式（监督者、集群、管道、辩论）中都表现出色。团队越来越多地组合框架，例如 LangGraph 用于复杂编排，CrewAI 用于面向业务用户的自动化。另一个趋势是托管运行时：OpenAI 的 Agents API、Claude Managed Agents 和 Amazon Bedrock Managed Agents（预览版）托管工具链本身，这将自建还是租赁的决策提升了一层（参见[持久执行](11-durable-execution.md)）。
 
 ---
 
-## Peer-to-Peer (P2P) Debate
+## 状态管理
 
-For high-accuracy tasks (e.g., Legal or Medical), we use **Agentic Debate**.
-- **Agent A**: Proposes an answer.
-- **Agent B**: Tries to find flaws in Agent A's answer.
-- **Agent A**: Refines the answer based on B's critique.
-- **Result**: Convergence on a higher-quality result than any single agent could produce.
+多智能体系统中最大的挑战是**共享黑板**。
 
-**Use a different model family for the critic.** Same-family critics share blind spots. GitHub's HydraFusion "critique" mode (research preview, September 30, 2026) bakes this in: a critic from a different model family reviews the draft and the drafter revises once. Capping the exchange at one revision is the other half of the lesson; open-ended debate is loopmaxxing with two agents.
-
----
-
-## Interview Questions
-
-### Q: What are the main failure modes of a "Supervisor" multi-agent architecture?
-
-**Strong answer:**
-The primary failure mode is **Decomposition Failure**. If the Supervisor agent breaks a task into sub-tasks that are logically inconsistent or have hidden dependencies, the workers will produce correct answers to the *wrong questions*. The standard fix is **Iterative Planning**: the Supervisor must get "Confirmation of sub-task feasibility" from the workers before they begin execution. Another failure is **Context Dilution**, where the global state becomes so bloated with worker logs that the Supervisor loses the "Big Picture."
-
-### Q: How do you choose between a "Sequence of Chains" and a "Multi-Agent Graph"?
-
-**Strong answer:**
-I use a **Sequence of Chains** when the task is linear and deterministic (e.g., Extract -> Translate -> Summarize). I use a **Multi-Agent Graph** (like LangGraph) when the task is **Non-Linear** or requires **Conditional Loops**. For example, if the "Translate" step might fail and need to go back to "Extract" for more context, a static chain breaks, but a graph can self-correct by routing back to an earlier node.
-
-### Q: When would you use A2A for multi-agent orchestration versus keeping all agents in a single framework?
-
-**Strong answer:**
-I keep agents in a single framework when the team owns all agents, they share the same runtime, and low latency between agent calls is critical. I introduce A2A when crossing **organizational or vendor boundaries**, for example when my orchestrator needs to delegate to a compliance agent maintained by a different team, or when integrating a third-party specialized agent (e.g., a legal review service). A2A adds HTTP overhead but provides **vendor neutrality**, **independent scaling**, and **capability discovery** via Agent Cards. The rule of thumb: same team, same framework; different team or vendor, use A2A.
-
-### Q: When do you define a multi-agent workflow in code, and when do you let a coordinator model delegate?
-
-**Strong answer:**
-It depends on whether I know the shape of the work before it starts. If the stages are known (gather, draft, verify, approve), I write them as code: stages run in a fixed order, pass structured results, and stop at human checkpoints, which makes cost bounded and every run auditable. GitHub's dynamic workflows are this pattern as a product. If the task's shape is only discoverable by doing it (a large refactor, open-ended research), I let a coordinator model delegate, as in Cursor Projects or GitHub's `/fleet`, and I bound it from outside: a concurrency cap on subagents, a total budget for the fan-out, and a verifier that is not the coordinator. In practice I mix them: a code-defined outer pipeline whose "do the work" stage is a model-driven coordinator, so adaptivity lives where it pays and determinism everywhere else.
+1. **本地状态**：仅特定智能体可见的上下文。
+2. **全局状态**：所有智能体可见的共享记忆（例如最终草稿）。
+3. **写入冲突**：当两个智能体尝试修改同一全局状态时。
+   - **最佳实践**：使用**事务性交接**。智能体只有在"拥有"锁时才能写入全局状态。当锁过于粗粒度时，使用乐观并发：为状态添加版本号，拒绝针对过时版本的写入，这与 A2A v1.1 应用于远程任务的 compare-and-set 理念相同。
 
 ---
 
-## References
-- Significant Gravitas. "AutoGPT" (open-source project, 2023)
-- Li et al. "CAMEL: Communicative Agents for 'Mind' Exploration of Large Language Model Society" (2023). https://arxiv.org/abs/2303.17760
-- OpenAI. "Swarm" (experimental library, 2024), succeeded by the OpenAI Agents SDK (2025)
-- A2A Project. "Agent2Agent Protocol Specification v1.0.1" (2026). https://github.com/a2aproject/A2A
-- Gartner. "Gartner Predicts 40% of Enterprise Apps Will Feature Task-Specific AI Agents by 2026, Up from Less Than 5% in 2025" (press release, August 26, 2025). https://www.gartner.com/en/newsroom/press-releases/2025-08-26-gartner-predicts-40-percent-of-enterprise-apps-will-feature-task-specific-ai-agents-by-2026-up-from-less-than-5-percent-in-2025
-- Andrew Ng. "Agentic Design Patterns" (The Batch, 2024)
-- GitHub Changelog. "Dynamic workflows in Copilot CLI and the Copilot app" (October 1, 2026). https://github.blog/changelog/2026-10-01-dynamic-workflows-in-copilot-cli-and-the-copilot-app
+## 点对点（P2P）辩论
+
+对于高精度任务（例如法律或医疗），我们使用**智能体辩论**。
+- **智能体 A**：提出答案。
+- **智能体 B**：试图找出智能体 A 答案中的缺陷。
+- **智能体 A**：根据 B 的批评改进答案。
+- **结果**：收敛到比任何单一智能体都能产生的更高质量结果。
+
+**对批评者使用不同的模型家族。** 同一家族的批评者共享盲点。GitHub 的 HydraFusion"批评"模式（研究预览，2026 年 9 月 30 日）内置了这一点：来自不同模型家族的批评者审核草稿，起草者修订一次。将交换限制在一次修订是教训的另一半；开放式辩论是两个智能体的循环最大化。
 
 ---
 
-*Next: [Agent Memory and State](05-agent-memory-and-state.md)*
+## 面试问题
+
+### 问："监督者"多智能体架构的主要故障模式是什么？
+
+**优秀回答：**
+主要故障模式是**分解失败**。如果监督者智能体将任务分解为逻辑不一致或存在隐藏依赖的子任务，工作人员将产生*错误问题*的正确答案。标准修复是**迭代规划**：监督者必须在工作人员开始执行之前获得"子任务可行性确认"。另一个故障是**上下文稀释**，全局状态因工作人员日志而膨胀，导致监督者失去"大局观"。
+
+### 问：如何在"链式序列"和"多智能体图"之间做出选择？
+
+**优秀回答：**
+当任务是线性和确定性的（例如提取 -> 翻译 -> 总结）时，我使用**链式序列**。当任务是**非线性的**或需要**条件循环**时，我使用**多智能体图**（如 LangGraph）。例如，如果"翻译"步骤可能失败并需要回到"提取"获取更多上下文，静态链会中断，但图可以通过路由回早期节点来自我纠正。
+
+### 问：何时在多智能体编排中使用 A2A，而不是将所有智能体保留在单一框架中？
+
+**优秀回答：**
+当团队拥有所有智能体、它们共享相同的运行时且智能体调用之间的低延迟至关重要时，我将智能体保留在单一框架中。当跨越**组织或供应商边界**时引入 A2A，例如当我的编排器需要委派给由不同团队维护的合规智能体，或集成第三方专业智能体（例如法律审核服务）时。A2A 增加了 HTTP 开销，但提供了**供应商中立性**、**独立扩展**和通过智能体卡片的**能力发现**。经验法则：同一团队，同一框架；不同团队或供应商，使用 A2A。
+
+### 问：何时在代码中定义多智能体工作流，何时让协调器模型委派？
+
+**优秀回答：**
+这取决于我是否在工作开始前就知道其形状。如果阶段已知（收集、起草、验证、批准），我将它们写成代码：阶段按固定顺序运行，传递结构化结果，并在人工检查点停止，这使成本有界且每次运行可审计。GitHub 的动态工作流就是这种模式作为产品。如果任务的形状只有在执行过程中才能发现（大规模重构、开放式研究），我让协调器模型委派，如 Cursor Projects 或 GitHub 的 `/fleet`，并从外部限制它：子智能体的并发上限、扇出的总预算以及不是协调器的验证器。在实践中我混合使用：代码定义的外部管道，其"执行工作"阶段是模型驱动的协调器，因此适应性存在于有价值的地方，而确定性存在于其他任何地方。
+
+---
+
+## 参考文献
+- Significant Gravitas. "AutoGPT"（开源项目，2023）
+- Li 等. "CAMEL：用于大型语言模型社会'心智'探索的交际智能体"（2023）。https://arxiv.org/abs/2303.17760
+- OpenAI. "Swarm"（实验性库，2024），由 OpenAI Agents SDK（2025）继承
+- A2A Project. "Agent2Agent 协议规范 v1.0.1"（2026）。https://github.com/a2aproject/A2A
+- Gartner. "Gartner 预测 40% 的企业应用将在 2026 年配备任务特定的 AI 智能体，而 2025 年不到 5%"（新闻稿，2025 年 8 月 26 日）。https://www.gartner.com/en/newsroom/press-releases/2025-08-26-gartner-predicts-40-percent-of-enterprise-apps-will-feature-task-specific-ai-agents-by-2026-up-from-less-than-5-percent-in-2025
+- Andrew Ng. "智能体设计模式"（The Batch，2024）
+- GitHub Changelog. "Copilot CLI 和 Copilot 应用中的动态工作流"（2026 年 10 月 1 日）。https://github.blog/changelog/2026-10-01-dynamic-workflows-in-copilot-cli-and-the-copilot-app
+
+---
+
+*下一篇：[智能体记忆与状态](05-agent-memory-and-state.md)*

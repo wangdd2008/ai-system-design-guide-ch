@@ -1,102 +1,102 @@
-# Reasoning Loops: ReAct and Beyond
+# 推理循环：ReAct及更远
 
-Reasoning Loops define the control flow of an agent. While **ReAct** was the 2023 baseline, current systems use more sophisticated patterns like **Plan-and-Solve**, **Self-Reflexion**, and **Inference-Time Scaling** running on top of reasoning-native models.
+推理循环定义了智能体的控制流。虽然**ReAct**是2023年的基线，但当前系统使用更复杂的模式，如**计划与解决**、**自我反思**和在推理原生模型之上运行的**推理时扩展**。
 
-## Table of Contents
+## 目录
 
-- [The Evolution of the Loop](#the-evolution-of-the-loop)
-- [ReAct: The Classic Pattern](#react-reasoning--acting)
-- [Self-Reflexion Loops](#self-reflexion-loops)
-- [Plan-and-Solve](#plan-and-solve)
-- [Flow Engineering (The LangGraph Pattern)](#flow-engineering-langgraph)
-- [Interview Questions](#interview-questions)
-- [References](#references)
+- [循环的演进](#the-evolution-of-the-loop)
+- [ReAct：经典模式](#react-reasoning--acting)
+- [自我反思循环](#self-reflexion-loops)
+- [计划与解决](#plan-and-solve)
+- [流程工程（LangGraph模式）](#flow-engineering-langgraph)
+- [面试问题](#interview-questions)
+- [参考资料](#references)
 
 ---
 
-## The Evolution of the Loop
+## 循环的演进
 
-| Era | Pattern | Core Philosophy |
+| 时代 | 模式 | 核心哲学 |
 |-----|---------|-----------------|
-| **2023** | ReAct | Interleave thought and action. |
-| **2024** | Reflexion | Evaluate errors and re-try. |
-| **2025** | System 2 Loops | Use hidden CoT for reliable multi-step logic. |
-| **2026** | Engineered harness loops | Thinking interleaved between tool calls, with the harness owning termination, verification, and budgets (see [Loop Engineering](12-loop-engineering.md)). |
+| **2023** | ReAct | 交替思考与行动。 |
+| **2024** | 反思 | 评估错误并重试。 |
+| **2025** | 系统2循环 | 使用隐藏CoT实现可靠的多步逻辑。 |
+| **2026** | 工程化框架循环 | 在工具调用之间穿插思考，框架拥有终止、验证和预算的控制权（参见[循环工程](12-loop-engineering.md)）。 |
 
 ---
 
-## ReAct: Reasoning + Acting
+## ReAct：推理+行动
 
-The fundamental loop for 90% of agents:
-1. **Thought**: "I need to find X."
-2. **Action**: `search_engine("X")`
-3. **Observation**: "X is at Y."
-4. **Repeat**.
+90%智能体的基础循环：
+1. **思考**："我需要找到X。"
+2. **行动**：`search_engine("X")`
+3. **观察**："X在Y处。"
+4. **重复**。
 
-**Critique**: ReAct is fragile. If the search returns "No results," a naive ReAct agent will often try the same search again. Modern loops inject **"Negative Constraints"** (e.g., "Don't try search results we've already seen").
+**批评**：ReAct很脆弱。如果搜索返回"无结果"，一个天真的ReAct智能体往往会再次尝试相同的搜索。现代循环注入**"负面约束"**（例如，"不要尝试我们已经看过的搜索结果"）。
 
 ---
 
-## Self-Reflexion Loops
+## 自我反思循环
 
-Reflexion adds a **"Critic"** step to the loop.
+反思为循环增加了一个**"批评者"**步骤。
 
 ```mermaid
 graph TD
-    A[User Goal] --> B[Actor]
-    B --> C[Action + Result]
-    C --> D{Critic / Evaluator}
-    D -- "Success" --> E[Final Result]
-    D -- "Fail / Loop" --> F[Reflection / Lesson]
+    A[用户目标] --> B[执行者]
+    B --> C[行动+结果]
+    C --> D{批评者/评估者}
+    D -- "成功" --> E[最终结果]
+    D -- "失败/循环" --> F[反思/教训]
     F --> B
 ```
 
-**Benefit**: By storing these "Reflections" in short-term memory, the agent builds a "Mental Map" of what doesn't work during the current session.
+**益处**：通过将这些"反思"存储在短期记忆中，智能体在当前会话中构建了一个"心理地图"，记录什么不起作用。
 
 ---
 
-## Plan-and-Solve
+## 计划与解决
 
-Instead of deciding one step at a time (greedy approach), the agent creates a **Static Plan** first, then executes it.
+智能体不是一次决定一步（贪心方法），而是首先创建一个**静态计划**，然后执行它。
 
-1. **Planner**: "I will do A, then B, then C."
-2. **Executor**: Carries out the steps.
-3. **Re-planner**: If step B fails, trigger a full re-plan rather than a local fix.
+1. **规划器**："我将先做A，然后做B，然后做C。"
+2. **执行器**：执行步骤。
+3. **重新规划器**：如果步骤B失败，触发完整重新规划而不是局部修复。
 
-**Why?**: Planning reduces "Stochastic Errors." By committing to a path, the model is less likely to get distracted by noisy tool results.
-
----
-
-## Flow Engineering (LangGraph)
-
-Modern agentic systems have moved from "Chat interfaces" to **"State Machines."**
-
-- **Cyclic Graphs**: Instead of a linear sequence, we define a graph where the model can loop back to a "Cleaning" node or a "Validation" node multiple times.
-- **Micro-Agents**: Each node in the graph is a specialized "Prompt" or "Tool."
-
-**Key Nuance**: The "Agent" is no longer just the LLM; the agent is the **Graph Execution Engine**.
+**为什么？**：规划减少"随机错误"。通过承诺一条路径，模型不太可能被嘈杂的工具结果分散注意力。
 
 ---
 
-## Interview Questions
+## 流程工程（LangGraph）
 
-### Q: When would you use a "Reasoning Loop" (ReAct) vs. a "Plan-and-Solve" architecture?
+现代智能体系统已从"聊天界面"转向**"状态机"**。
 
-**Strong answer:**
-I choose **ReAct** for **Exploratory** tasks where the environment is unpredictable (e.g., browsing a new website where you don't know the URL structure yet). The agent needs to react to every observation. I choose **Plan-and-Solve** for **Predictable** but complex workflows (e.g., generating a financial report from 5 known APIs). Planning prevents the model from "meandering" and allows for better parallelization of steps that don't depend on each other.
+- **循环图**：不是线性序列，我们定义一个图，模型可以多次循环回到"清理"节点或"验证"节点。
+- **微型智能体**：图中的每个节点都是一个专门的"提示"或"工具"。
 
-### Q: What is "Inference-Time Scaling" and how does it relate to Agentic Loops?
-
-**Strong answer:**
-Inference-Time Scaling (popularized by OpenAI's o1 in 2024) refers to spending more compute *during the response generation* rather than just during training. In current APIs it surfaces as an **effort** setting: GPT-6 Astra exposes five levels from low to max, and Claude Opus 5.5 and Fable 5.1 scale adaptive thinking with an effort parameter. In an agentic context, more thinking means the model weighs alternatives before committing to an action, which can cut the number of "Real World" tool calls and the failure rate. Two things I keep separate in an interview. First, vendors have not said their reasoning models run explicit tree search internally; if I want **Search Trees** (best-of-N, MCTS with a verifier), I build them in the harness, where I can see and score the branches. Second, effort is a cost and latency knob I tune per step, so I run the planner at high effort and the routine executor steps at low effort rather than paying maximum thinking on every tool call.
+**关键细微之处**："智能体"不再只是LLM；智能体是**图执行引擎**。
 
 ---
 
-## References
-- Yao et al. "ReAct: Synergizing Reasoning and Acting in Language Models" (2022). https://arxiv.org/abs/2210.03629
-- Shinn et al. "Reflexion: Language Agents with Verbal Reinforcement Learning" (2023). https://arxiv.org/abs/2303.11366
-- Wang et al. "Plan-and-Solve Prompting" (2023). https://arxiv.org/abs/2305.04091
+## 面试问题
+
+### 问：何时使用"推理循环"（ReAct）与"计划与解决"架构？
+
+**优秀回答：**
+我为**探索性**任务选择**ReAct**，其中环境不可预测（例如，浏览一个您还不知道URL结构的新网站）。智能体需要对每个观察做出反应。我为**可预测**但复杂的工作流选择**计划与解决**（例如，从5个已知API生成财务报告）。规划防止模型"漫游"，并允许更好地并行化彼此不依赖的步骤。
+
+### 问：什么是"推理时扩展"，它与智能体循环有什么关系？
+
+**优秀回答：**
+推理时扩展（由OpenAI的o1在2024年推广）指的是在响应生成期间花费更多计算资源，而不仅仅是在训练期间。在当前API中，它表现为**力度**设置：GPT-6 Astra提供从低到最大的五个级别，而Claude Opus 5.5和Fable 5.1通过力度参数调整自适应思考。在智能体环境中，更多思考意味着模型在承诺行动之前权衡替代方案，这可以减少"现实世界"工具调用的数量和失败率。在面试中，我会分开说两件事。首先，供应商没有说他们的推理模型在内部运行显式树搜索；如果我想要**搜索树**（最佳N选、带验证器的MCTS），我会在框架中构建它们，在那里我可以看到并评分分支。其次，力度是我按步骤调整的成本和延迟旋钮，因此我以高力度运行规划器，以低力度运行常规执行步骤，而不是为每个工具调用支付最大思考成本。
 
 ---
 
-*Next: [Tool Use and the Model Context Protocol (MCP)](03-tool-use-and-mcp.md)*
+## 参考资料
+- Yao et al. "ReAct：在语言模型中协同推理与行动"（2022）。https://arxiv.org/abs/2210.03629
+- Shinn et al. "反思：带口头强化学习的语言智能体"（2023）。https://arxiv.org/abs/2303.11366
+- Wang et al. "计划与解决提示"（2023）。https://arxiv.org/abs/2305.04091
+
+---
+
+*下一篇：[工具使用与模型上下文协议（MCP）](03-tool-use-and-mcp.md)*

@@ -1,148 +1,148 @@
-# Durable Execution for Long-Running Agents
+# 长期运行智能体的持久执行
 
-An agent run is not a request/response handler. It calls tools, reads documents, triggers actions, waits for approvals, and carries state across steps that may run for minutes, hours, or days. That collides with ordinary infrastructure: processes get killed, nodes get recycled, and deploys roll pods. A naive agent loop holding state in memory loses everything on any of those events, and a naive retry re-runs side effects. **Durable execution** is the discipline that makes long-running agents survive all of it. This chapter covers the model, the tools, how it maps onto agent loops, and when it is worth the complexity.
+智能体运行不是请求/响应处理程序。它调用工具、读取文档、触发动作、等待审批，并在可能运行数分钟、数小时或数天的步骤之间携带状态。这与普通基础设施冲突：进程被终止、节点被回收、部署滚动 pod。在内存中保存状态的朴素智能体循环在任何这些事件中丢失一切，而且朴素重试会重新运行副作用。**持久执行**是让长期运行智能体在所有这些事件中存活的纪律。本章涵盖模型、工具、它如何映射到智能体循环，以及何时值得其复杂性。
 
-## Table of Contents
+## 目录
 
-- [Why Agents Break the Normal Failure Model](#why-agents-break-the-normal-failure-model)
-- [The Durable-Execution Model](#the-durable-execution-model)
-- [Tools](#tools)
-- [Mapping Durable Execution onto Agent Loops](#mapping-durable-execution-onto-agent-loops)
-- [Managed Agent Runtimes: Renting the Durable Loop](#managed-agent-runtimes-renting-the-durable-loop)
-- [When You Need It](#when-you-need-it)
-- [Do You Need Durable Execution?](#do-you-need-durable-execution)
-- [Interview Questions](#interview-questions)
-- [References](#references)
-
----
-
-## Why Agents Break the Normal Failure Model
-
-Agents are long-running, stateful, side-effecting processes, which breaks three assumptions:
-
-- **Exactly-once side effects.** If a tool call succeeds but the agent crashes before recording it, a resumed run may retry the call, meaning duplicate payments, tickets, or deploys. The core ambiguity is that after a mid-activity crash you cannot tell whether the side effect committed or only its acknowledgment was lost, so a naive retry sends it twice.
-- **Human-in-the-loop pauses that survive restarts.** An agent may need to block on an approval for hours or a day without losing progress or burning compute. A pause held in process memory dies on the next deploy.
-- **Recorded nondeterminism.** You cannot replay an LLM call and pretend it is the same event; the same prompt can produce a different response. The output must be recorded the first time and reused during recovery.
-
-Naive retries re-run side effects; naive checkpoints that save state only between steps still leave an unsafe window between executing a side effect and recording its result. The distinction to teach: **checkpoints capture state, but durable execution captures the journal of steps**, and you cannot safely resume mid-side-effect from a state snapshot alone.
+- [为什么智能体打破正常失败模型](#why-agents-break-the-normal-failure-model)
+- [持久执行模型](#the-durable-execution-model)
+- [工具](#tools)
+- [将持久执行映射到智能体循环](#mapping-durable-execution-onto-agent-loops)
+- [托管智能体运行时：租用持久循环](#managed-agent-runtimes-renting-the-durable-loop)
+- [何时需要它](#when-you-need-it)
+- [你需要持久执行吗？](#do-you-need-durable-execution)
+- [面试题](#interview-questions)
+- [参考文献](#references)
 
 ---
 
-## The Durable-Execution Model
+## 为什么智能体打破正常失败模型
 
-The core pattern is **workflows-as-code plus an append-only event history plus deterministic replay.** Systems like Temporal record an immutable event history for each workflow; if a worker crashes at step 5 of 10, another worker replays the history to reconstruct in-memory state and resumes at step 6.
+智能体是长期运行、有状态、有副作用的进程，这打破了三个假设：
 
-Where the determinism constraints come from is the load-bearing concept: recovery works *by replay*, so during a replay the steps in the execution must match the steps in the log, or the system cannot guarantee recovery. That means **workflow code itself must be deterministic**: no direct calls to the current time, no random numbers or UUIDs, no direct network calls, no nondeterministic thread interleaving inside workflow code. Nondeterminism and side effects are pushed into **activities** (steps) whose results are recorded once and replayed from the log thereafter.
+- **恰好一次副作用。** 如果工具调用成功但智能体在记录它之前崩溃，恢复后的运行可能重试调用，意味着重复支付、工单或部署。核心歧义在于，在活动中间崩溃后，你无法判断副作用是否已提交，还是仅其确认丢失了，因此朴素重试会发送两次。
+- **在重启中存活的人机协作暂停。** 智能体可能需要因审批阻塞数小时或一天而不丢失进度或消耗计算。进程内存中保持的暂停在下一次部署时死亡。
+- **记录非确定性。** 你无法重放 LLM 调用并假装它是同一事件；相同提示可以产生不同响应。输出必须在第一次时记录并在恢复期间重用。
 
-The building blocks:
-- **Activities** are the only place side effects and nondeterminism live; each is independently retried.
-- **Exactly-once activities** use idempotency keys, often derived from the workflow and step IDs, so a retried tool call does not double-execute.
-- **Durable timers** are persisted and survive worker restarts and deploys, so a workflow can wait days without holding a process open.
-- **Signals** push external events (an approval, a cancellation) into a running workflow; paired **queries** read its current state without mutating it (status, monitoring). While a workflow awaits a signal or timer, the worker idles and consumes no compute until the event arrives, when it replays the history and resumes.
-
-The cost of replay-based determinism is **versioning**: because long-running workflows replay old histories, changing workflow code can break replay and cause incidents unless versioned carefully. This is the single most-cited operational hazard.
+朴素重试会重新运行副作用；仅在步骤之间保存状态的朴素检查点仍在执行副作用和记录其结果之间留下不安全窗口。需要区分的教训是：**检查点捕获状态，但持久执行捕获步骤日志**，而且你无法仅从状态快照安全地在副作用中间恢复。
 
 ---
 
-## Tools
+## 持久执行模型
 
-| Tool | Where state lives | Footprint | Notes |
+核心模式是**代码即工作流加仅追加事件历史加确定性重放。** Temporal 等系统为每个工作流记录不可变事件历史；如果工人在第 5 步崩溃（共 10 步），另一个工人重放历史以重构内存中状态并从第 6 步恢复。
+
+确定性约束的来源是承重概念：恢复通过*重放*工作，因此在重放期间执行中的步骤必须匹配日志中的步骤，否则系统无法保证恢复。这意味着**工作流代码本身必须是确定性的**：不直接调用当前时间、不生成随机数或 UUID、不直接进行网络调用、工作流代码内部没有非确定性线程交错。非确定性和副作用被推入**活动**（步骤），其结果被记录一次并从那时起从日志重放。
+
+构建块：
+- **活动**是副作用和非确定性唯一存在的地方；每个活动独立重试。
+- **恰好一次活动**使用幂等性密钥，通常源自工作流和步骤 ID，因此重试的工具调用不会双重执行。
+- **持久计时器**被持久化并在工人重启和部署中存活，因此工作流可以等待数天而不保持进程打开。
+- **信号**将外部事件（审批、取消）推入运行中的工作流；配对的**查询**读取其当前状态而不改变它（状态、监控）。当工作流等待信号或计时器时，工人空闲且不消耗计算直到事件到达，此时它重放历史并恢复。
+
+基于重放的确定性的代价是**版本控制**：因为长期运行的工作流重放旧历史，更改工作流代码可能破坏重放并导致事件，除非仔细版本化。这是单次最常被引用的运营风险。
+
+---
+
+## 工具
+
+| 工具 | 状态存储位置 | 占用空间 | 备注 |
 |------|-------------------|-----------|-------|
-| **Temporal** (reference) | A separate cluster (or Temporal Cloud) | High | Event history plus deterministic replay; many languages; proven at large scale; deepest agent-framework integrations. |
-| **Restate** | Lightweight engine, sidecar or embedded | Low | Journals each step; adds Virtual Objects (stateful sessions keyed by user/session with automatic concurrency control). |
-| **DBOS** | Postgres rows | Lowest | A library you import; workflow state and transactional side effects can share one Postgres transaction for exactly-once on DB steps; no separate cluster. |
-| **Inngest** | Managed, event-driven | Low | Independently retried steps with AI-specific primitives and built-in concurrency and throttling for LLM rate limits. |
-| **AWS Step Functions** | AWS-managed | Managed | Workflow as a declarative state machine (not general code); recently added agent-runtime integrations. |
+| **Temporal**（参考） | 单独集群（或 Temporal Cloud） | 高 | 事件历史加确定性重放；多种语言；在大规模上得到验证；最深的智能体框架集成。 |
+| **Restate** | 轻量级引擎，sidecar 或嵌入式 | 低 | 记录每个步骤；添加虚拟对象（按用户/会话键控的有状态会话，自动并发控制）。 |
+| **DBOS** | Postgres 行 | 最低 | 你导入的库；工作流状态和事务性副作用可以在一个 Postgres 事务中共享，以实现数据库步骤的恰好一次；无单独集群。 |
+| **Inngest** | 托管，事件驱动 | 低 | 独立重试的步骤，带有 AI 特定原语和用于 LLM 速率限制的内置并发和节流。 |
+| **AWS Step Functions** | AWS 托管 | 托管 | 工作流作为声明式状态机（非通用代码）；最近添加了智能体运行时集成。 |
 
-The approaches differ in where they put the durability boundary. Temporal trades operational overhead for scale; DBOS collapses durability into your existing database; Restate is HTTP/gRPC-native with durable sessions; Inngest is event-driven and TS-first; Step Functions is AWS-native but declarative rather than general-purpose code.
-
----
-
-## Mapping Durable Execution onto Agent Loops
-
-The core mapping: the **agent loop becomes a workflow, and each model call and tool call becomes a durable activity.** On a crash, completed model calls and tool invocations replay from the log rather than re-execute, so you do not re-pay tokens or re-fire side effects, and you can even fix a bug and resume a running app.
-
-The integration landscape in 2026:
-- **Temporal + OpenAI Agents SDK** reached general availability in early 2026, wrapping each agent invocation and tool call as a durable activity.
-- **Temporal + Google ADK** is experimental, rerouting LLM calls through activities, and notable for requiring minimal code change (the wrappers detect whether they are running inside a workflow and fall back to direct execution otherwise).
-- **LangGraph** provides lighter-weight, framework-native durability through **checkpointers** that save graph state at each super-step to persistent storage, with selectable durability modes (checkpoint at exit, asynchronously, or synchronously before each step). Its guidance mirrors the determinism rule: keep the workflow deterministic and idempotent and wrap side effects in tasks.
-- **DBOS and Restate** integrate at the library level with agent frameworks, wrapping agent runs and sub-agent calls as durable workflows and child workflows.
-- **Temporal + Amazon Bedrock AgentCore Runtime** entered prerelease on September 21, 2026: a Temporal workflow runs the durable agent loop, model and tool calls are activities with retry policies, Strands Agents supplies the programming model, and AgentCore Runtime is the compute behind Temporal Serverless Workers.
-
-The honest tension to teach: **framework-native checkpointing recovers *state*; a full durable-execution engine additionally gives exactly-once side effects, durable timers, signals, and replay semantics across deploys.** The gap matters most when tool calls have irreversible external effects. For agents that are mostly LLM reasoning with recoverable, idempotent tools, framework checkpointing plus idempotency keys on the few non-idempotent tools is often enough.
-
-The canonical pattern that ties it together: when a proposed action is risky, the workflow pauses and waits for human approval via a signal, consuming no compute while it waits, then resumes durably, exactly the [human-in-the-loop](08-human-in-the-loop-patterns.md) approval gate, made crash-proof.
+这些方法在持久性边界的放置上有所不同。Temporal 用运营开销换取规模；DBOS 将持久性折叠到你现有的数据库中；Restate 是原生 HTTP/gRPC 的持久会话；Inngest 是事件驱动且 TS 优先的；Step Functions 是 AWS 原生的，但为声明式而非通用代码。
 
 ---
 
-## Managed Agent Runtimes: Renting the Durable Loop
+## 将持久执行映射到智能体循环
 
-As of September 2026 both Anthropic and OpenAI sell the agent harness itself as a managed runtime with durable sessions built in (OpenAI's Agents API joined Claude Managed Agents on September 10), and AWS offers OpenAI's inside its own cloud. That adds a third option next to "framework checkpointing" and "run a durable-execution engine": rent the loop.
+核心映射是：**智能体循环变成工作流，每个模型调用和工具调用变成持久活动。** 在崩溃时，已完成的模型调用和工具调用从日志重放而非重新执行，因此你无需重新支付令牌或重新触发副作用，而且你甚至可以修复错误并恢复运行中的应用程序。
 
-| Platform | Status (October 1, 2026) | Durability and control features | Constraints to check |
+2026 年的集成格局：
+- **Temporal + OpenAI Agents SDK** 在 2026 年初达到 GA，将每个智能体调用和工具调用包装为持久活动。
+- **Temporal + Google ADK** 是实验性的，通过活动重新路由 LLM 调用，而且以需要最少代码更改著称（包装器检测它们是否在工作流内运行，否则回退到直接执行）。
+- **LangGraph** 通过**检查点**提供更轻量级、框架原生的持久性，在每个超级步骤将图形状态保存到持久存储，带有可选的持久性模式（退出时检查点、异步或在每个步骤之前同步）。其指南反映了确定性规则：保持工作流确定性和幂等性，并将副作用包装在任务中。
+- **DBOS 和 Restate** 在库级别与智能体框架集成，将智能体运行和子智能体调用包装为持久工作流和子工作流。
+- **Temporal + Amazon Bedrock AgentCore Runtime** 于 2026 年 9 月 21 日进入预发布：Temporal 工作流运行持久智能体循环，模型和工具调用是带有重试策略的活动，Strands Agents 提供编程模型，AgentCore Runtime 是 Temporal Serverless Workers 背后的计算。
+
+需要教授的诚实张力：**框架原生检查点恢复*状态*；完整的持久执行引擎额外提供恰好一次副作用、持久计时器、信号和跨部署的重放语义。** 当工具调用具有不可逆外部效果时，差距最为重要。对于主要是 LLM 推理且带有可恢复、幂等工具的智能体，框架检查点加上少数非幂等工具的幂等性密钥通常就足够了。
+
+将它们联系起来的规范模式：当提议的动作有风险时，工作流暂停并通过信号等待人工审批，在等待时不消耗计算，然后持久恢复，正是[人机协作](08-human-in-the-loop-patterns.md)审批门，变得防崩溃。
+
+---
+
+## 托管智能体运行时：租用持久循环
+
+截至 2026 年 9 月，Anthropic 和 OpenAI 都将智能体工具链本身作为带有内置持久会话的托管运行时出售（OpenAI 的 Agents API 于 9 月 10 日加入 Claude Managed Agents），而且 AWS 在其自己的云中提供 OpenAI 的服务。这为“框架检查点”和“运行持久执行引擎”之外的第三个选项：租用循环。
+
+| 平台 | 状态（2026 年 10 月 1 日） | 持久性和控制功能 | 需要检查的约束 |
 |----------|--------------------------|---------------------------------|----------------------|
-| **Claude Managed Agents** | Shipping | Durable sessions; hard session budgets that pause with `budget_reached` (August 7); cron-scheduled deployments (since June 9); agents-as-code via `ant apply` with a committed `claude-lock.json` (ant CLI 1.30.0, September 3); server-evaluated auto permission policy and live terminal attach (September 10) | Bills tokens plus $0.08 per session-hour of running time (idle time free); no Batch discount |
-| **OpenAI Agents API** | Public beta (September 10) | Managed Codex harness: durable sessions, context compaction, recovery, subagent delegation, MCP servers over HTTP, mid-run steering; OpenAI-hosted or self-hosted sandboxes; hosted-browser computer use (September 29) | US data residency only and no Zero Data Retention at launch; billed at model, tool, and container rates (sandboxes $0.03 to $0.48 per 20-minute session) |
-| **Amazon Bedrock Managed Agents** (powered by OpenAI) | Preview (September 29) | A customized OpenAI Agents API running inside AWS: per-agent IAM role, CloudTrail logging, durable sessions, human approval before consequential actions | us-east-1, us-east-2, and us-west-2 only; no extra charge during preview |
-| **AWS AgentCore Runtime V2** | Announced September 18 | Restores each instance from a snapshot of an initialized agent; P75 cold start about 2 s versus roughly 5.4 s to 30 s on the original runtime (AWS-reported) | Opt in with `platformVersion` V2; higher rate on far fewer GB-hours |
-| **Microsoft Foundry Agent Service** | Routines GA (September 24) | Recurring, one-shot timer, and event-based triggers for published agents | Network egress controls still in preview |
+| **Claude Managed Agents** | 已发布 | 持久会话；硬会话预算在 `budget_reached` 时暂停（8 月 7 日）；cron 计划部署（自 6 月 9 日起）；通过 `ant apply` 的 agents-as-code，带有提交的 `claude-lock.json`（ant CLI 1.30.0，9 月 3 日）；服务器评估自动权限策略和实时终端附加（9 月 10 日） | 按令牌计费加每小时 $0.08 的会话运行时间（空闲时间免费）；无批量折扣 |
+| **OpenAI Agents API** | 公开测试（9 月 10 日） | 托管 Codex 工具链：持久会话、上下文压缩、恢复、子智能体委托、HTTP 上的 MCP 服务器、中途引导；OpenAI 托管或自托管沙箱；托管浏览器计算机使用（9 月 29 日） | 仅美国数据驻留，发布时无零数据保留；按模型、工具和容器费率计费（沙箱每 20 分钟会话 $0.03 到 $0.48） |
+| **Amazon Bedrock Managed Agents**（由 OpenAI 提供） | 预览（9 月 29 日） | 在 AWS 中运行的定制 OpenAI Agents API：每个智能体 IAM 角色、CloudTrail 日志记录、持久会话、结果性动作之前的人工审批 | 仅限 us-east-1、us-east-2 和 us-west-2；预览期间无额外费用 |
+| **AWS AgentCore Runtime V2** | 9 月 18 日宣布 | 从已初始化智能体的快照恢复每个实例；P75 冷启动约 2 秒，对比原始运行时约 5.4 到 30 秒（AWS 报告） | 选择 `platformVersion` V2；更少的 GB-小时费率更高 |
+| **Microsoft Foundry Agent Service** | Routines GA（9 月 24 日） | 已发布智能体的周期性、一次性计时器和事件触发器 | 网络出口控制仍在预览中 |
 
-What renting buys: crash recovery, compaction, triggers, budgets, and approvals without operating a cluster. What it does not buy: **exactly-once semantics for your own side-effecting tools**. A managed runtime can resume a session, but it cannot know whether your payment API committed before the crash, so non-idempotent tools still need idempotency keys and, for multi-step side effects, your own durable workflow behind the tool. The other costs are lock-in at the harness layer (agents-as-code files, session semantics, and event formats are vendor-specific) and residency or retention gaps, which can rule a platform out for regulated data before any technical comparison starts. Bedrock Managed Agents running OpenAI's harness inside AWS is the clearest sign that the harness, not the model endpoint, is becoming the integration unit.
-
----
-
-## When You Need It
-
-Durable execution is the emerging answer to *production* agent reliability, and the 2026 traction is real: Temporal followed its earlier Series D with a $550M Series E at a $12.55B valuation (September 14, 2026), reporting 1.9 trillion billable actions in August (up more than 350% year over year), more than 4,300 paying customers, and OpenAI's Temporal usage up 60x in under a year (company-reported figures). A widely cited vendor case study describes a deep-research agent that **migrated from a framework prototype to a durable-execution engine** after hitting race conditions, fragile custom retry logic, and stale-state bugs that became costly to support (a vendor-published account, so read the direction as real and the framing as theirs).
-
-But it is a deliberate complexity trade. The constraints (determinism, versioning hazards, a new testing and monitoring model) are real, and for agents that are mostly read-only, short-lived, or single-shot, **framework-native checkpointing or a queue plus idempotency keys is often enough** and far cheaper to operate. DBOS and Restate lower the entry cost materially versus a full cluster, so if the objection is operational overhead, the library-and-Postgres approach may get most of the value.
+租用的好处：崩溃恢复、压缩、触发器、预算和审批，无需运营集群。它买不到的是：**你自己有副作用工具的恰好一次语义**。托管运行时可以恢复会话，但它无法知道你的支付 API 是否在崩溃之前提交，因此非幂等工具仍然需要幂等性密钥，而且对于多步副作用，你自己的持久工作流在工具后面。其他成本是工具链层的锁定（agents-as-code 文件、会话语义和事件格式是特定于供应商的），以及驻留或保留差距，这可能在任何技术比较开始之前就将平台排除在受监管数据之外。在 AWS 内部运行 OpenAI 工具链的 Bedrock Managed Agents 是最明显的信号，表明工具链而非模型端点正在成为集成单元。
 
 ---
 
-## Do You Need Durable Execution?
+## 何时需要它
 
-Walk these in order:
+持久执行是生产智能体可靠性的新兴答案，而且 2026 年的牵引力是真实的：Temporal 在其早期 D 轮融资后进行了 5.5 亿美元的 E 轮融资，估值为 125.5 亿美元（2026 年 9 月 14 日），报告 8 月份 1.9 万亿计费动作（同比增长超过 350%），4300 多名付费客户，而且 OpenAI 的 Temporal 使用量在不到一年内增长了 60 倍（公司报告数据）。一个广泛引用的供应商案例研究描述了一个深度研究智能体**从框架原型迁移到持久执行引擎**，在遭遇竞争条件、脆弱的自定义重试逻辑和过时状态错误后，这些错误变得成本高昂（供应商发布的账户，因此将方向视为真实，框架视为他们的）。
 
-1. **Does any tool call have an irreversible external side effect** (payment, email, deploy, ticket, cross-system write)? No: framework checkpointing or a retry/queue likely suffices. Yes: continue.
-2. **Can a single run outlast your process or deploy cycle, or must it pause for human approval across restarts?** No: in-memory plus a checkpoint on completion is probably fine. Yes: you need durable timers and durable pauses.
-3. **Would re-running the whole agent on a crash be unacceptable** in cost, duplicate effects, or lost multi-hour progress? Yes: you need replay and exactly-once, so durable execution is justified.
-4. **Pick the weight class:** DBOS if side effects are mostly writes to your own Postgres and you want one deploy; Restate for low-ops, HTTP-native, stateful sessions; Inngest for event-driven, TS-first, AI-native rate-limit control; Step Functions if you are all-in on AWS and fine with a declarative state machine; Temporal for large scale, complex long-running processes, and the deepest agent-framework integrations; a managed agent runtime (Claude Managed Agents, OpenAI Agents API, Bedrock Managed Agents) when its residency, retention, and pricing fit and you would rather rent the loop than run it; or stay with framework-native durability (LangGraph checkpointers) plus idempotency keys when the agent is mostly reasoning with recoverable tools.
-
-It is overkill for simple CRUD, sub-millisecond hot paths, pure high-throughput streaming, or a tiny team whose needs a queue with a dead-letter handler already covers.
+但它是一个深思熟虑的复杂性权衡。约束（确定性、版本控制风险、新的测试和监控模型）是真实的，而且对于主要是只读、短期或单一任务的智能体，**框架原生检查点或队列加幂等性密钥通常就足够了**，而且运营起来便宜得多。DBOS 和 Restate 与完整集群相比实质性地降低了进入成本，因此如果反对意见是运营开销，库加 Postgres 的方法可能获得大部分价值。
 
 ---
 
-## Interview Questions
+## 你需要持久执行吗？
 
-### Q: Why are naive retries and checkpoints insufficient for a production agent with side effects?
+按顺序走以下步骤：
 
-**Strong answer:**
-Because an agent crash creates an ambiguity a retry cannot resolve safely. If the agent calls a tool that charges a card and then crashes, you cannot tell from a state snapshot whether the charge committed before the crash or whether only the acknowledgment was lost, so a naive retry risks charging twice. A plain checkpoint that saves state between steps still leaves an unsafe window between executing the side effect and recording that it happened. Durable execution closes this by capturing the journal of steps, not just the latest state: each side-effecting step is a recorded activity with an idempotency key, so on replay a completed activity returns its recorded result instead of re-running. That gives exactly-once semantics for the side effect and lets the workflow resume from the exact point it failed rather than from the beginning.
+1. **任何工具调用是否有不可逆的外部副作用**（支付、邮件、部署、工单、跨系统写入）？没有：框架检查点或重试/队列可能足够。有：继续。
+2. **单次运行是否可能超过你的进程或部署周期，或者必须在重启中暂停等待人工审批？** 没有：内存中加上完成时检查点可能就足够了。有：你需要持久计时器和持久暂停。
+3. **在崩溃时重新运行整个智能体是否不可接受**，在成本、重复效果或丢失的多小时进度方面？有：你需要重放和恰好一次，因此持久执行是合理的。
+4. **选择重量级：** 如果副作用主要是写入你自己的 Postgres 而且你想要一次部署，选择 DBOS；Restate 用于低运维、HTTP 原生、有状态会话；Inngest 用于事件驱动、TS 优先、AI 原生速率限制控制；Step Functions 如果你完全在 AWS 上且对声明式状态机满意；Temporal 用于大规模、复杂的长期运行流程和最深的智能体框架集成；托管智能体运行时（Claude Managed Agents、OpenAI Agents API、Bedrock Managed Agents）当驻留、保留和定价适合且你宁愿租用循环而非运行它时；或者在智能体主要是带有可恢复工具的推理时，继续使用框架原生持久性（LangGraph 检查点）加幂等性密钥。
 
-### Q: When is durable execution overkill, and what would you use instead?
-
-**Strong answer:**
-It is overkill when the agent has no irreversible side effects, runs short enough to fit inside a process and deploy cycle, and would be fine to simply re-run on failure, for example a read-only research or summarization agent with idempotent tools. There I would use framework-native durability like a LangGraph checkpointer to recover state, plus idempotency keys on the few non-idempotent calls, and a retry queue with a dead-letter handler. The determinism constraints and versioning hazards of a full engine like Temporal are a real cost, so I would only take them on once the agent has irreversible effects, must pause for human approval across restarts, or is long enough that re-running on a crash is unacceptable. If operational overhead is the blocker but I still need durability, a library approach like DBOS that uses my existing Postgres gets much of the value without running a cluster.
-
-### Q: Would you build your agent on Temporal or rent a managed agent runtime like the OpenAI Agents API or Claude Managed Agents?
-
-**Strong answer:**
-I separate the agent loop from the side effects. Renting the loop is attractive: durable sessions, compaction, triggers, session spend caps, and policy-evaluated approvals arrive without a cluster, and the vendor tunes the harness to its models. But I check three things first. Compliance: the OpenAI Agents API launched with US-only data residency and no Zero Data Retention, which can end the conversation for regulated data. Semantics: a managed runtime resumes the session, but it cannot give exactly-once guarantees for my payment or ticketing tools, so those still need idempotency keys or a durable workflow of their own behind the tool interface. Lock-in: agents-as-code files, event formats, and session semantics are vendor-specific, so moving later is a rewrite, and model choice gets coupled to harness choice. My usual answer is a hybrid: rent the loop for agents that are mostly reasoning plus idempotent tools, and keep irreversible multi-step operations (refunds, provisioning) in Temporal or DBOS workflows exposed to the agent as single tools, so the part that must be exactly-once lives where I control it.
+对于简单 CRUD、亚毫秒热路径、纯高吞吐量流，或一个队列加死信处理程序已经覆盖其需求的小团队来说，这是过度杀伤。
 
 ---
 
-## References
+## 面试题
 
-- Resonate, ["From where do deterministic constraints come?"](https://journal.resonatehq.io/p/from-where-do-deterministic-constraints)
-- Restate, ["What is durable execution?"](https://www.restate.dev/what-is-durable-execution)
-- Temporal, [OpenAI Agents SDK integration](https://temporal.io/blog/announcing-openai-agents-sdk-integration), [Series D announcement](https://temporal.io/news/temporal-raises-300M-to-make-agentic-ai-real-for-companies), and [Series E announcement](https://temporal.io/news/temporal-raises-550m-at-a-12-55b-valuation)
-- OpenAI, [Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview)
-- Anthropic, [Claude Platform release notes (Managed Agents)](https://platform.claude.com/docs/en/release-notes/overview)
-- Temporal, [prototype to production-ready agentic AI: a Grid Dynamics case study](https://temporal.io/blog/prototype-to-prod-ready-agentic-ai-grid-dynamics)
-- Google ADK, [Temporal integration](https://adk.dev/integrations/temporal/)
-- LangChain, [durable execution in LangGraph](https://docs.langchain.com/oss/python/langgraph/durable-execution)
-- Diagrid, ["Checkpoints are not durable execution"](https://www.diagrid.io/blog/checkpoints-are-not-durable-execution-why-langgraph-crewai-google-adk-and-others-fall-short-for-production-agent-workflows)
+### Q: 为什么朴素重试和检查点对于有副作用的生产智能体来说不够？
+
+**优秀回答：**
+因为智能体崩溃创造了一个重试无法安全解决的歧义。如果智能体调用了一个收费工具然后崩溃，你无法从状态快照判断收费是否在崩溃之前提交，还是仅其确认丢失了，因此朴素重试有两次收费的风险。在步骤之间保存状态的普通检查点仍在执行副作用和记录它发生之间留下不安全窗口。持久执行通过捕获步骤日志而非仅最新状态来关闭这一点：每个有副作用的步骤是带有幂等性密钥的记录活动，因此在重放时已完成的活动返回其记录的结果而非重新运行。这为副作用提供了恰好一次语义，并让工作流从失败的确切点恢复，而非从头开始。
+
+### Q: 何时持久执行是过度杀伤，你会用什么代替？
+
+**优秀回答：**
+当智能体没有不可逆副作用、运行时间足够短以适合进程和部署周期内，而且在失败时简单重新运行就可以了时，它是过度杀伤，例如带有幂等工具的只读研究或摘要智能体。在那里我会使用框架原生持久性如 LangGraph 检查点来恢复状态，加上少数非幂等调用的幂等性密钥，以及带有死信处理程序的重试队列。Temporal 等完整引擎的确定性约束和版本控制风险是真实的成本，因此我只会承担它们，一旦智能体有不可逆效果、必须在重启中暂停等待人工审批，或长到在崩溃时重新运行是不可接受的。如果运营开销是障碍但我仍然需要持久性，像 DBOS 这样的库方法使用我现有的 Postgres，无需运行集群即可获得大部分价值。
+
+### Q: 你会在 Temporal 上构建你的智能体，还是租用像 OpenAI Agents API 或 Claude Managed Agents 这样的托管智能体运行时？
+
+**优秀回答：**
+我将智能体循环与副作用分开。租用循环很有吸引力：持久会话、压缩、触发器、会话支出上限和策略评估的审批无需集群即可到达，而且供应商将其工具链调整到其模型。但我首先检查三件事。合规性：OpenAI Agents API 发布时仅美国数据驻留且无零数据保留，这可以结束受监管数据的对话。语义：托管运行时可以恢复会话，但它无法为我的支付或票务工具提供恰好一次保证，因此这些仍然需要幂等性密钥或其自己的持久工作流在工具接口后面。锁定：agents-as-code 文件、事件格式和会话语义是特定于供应商的，因此以后迁移是重写，而且模型选择与工具链选择耦合。我的通常答案是混合：租用循环用于主要是推理加幂等工具的智能体，并将不可逆多步操作（退款、配置）保留在 Temporal 或 DBOS 工作流中，作为单个工具暴露给智能体，因此必须恰好一次的部分生活在我控制它的地方。
 
 ---
 
-*Next: [Loop Engineering](12-loop-engineering.md)*
+## 参考文献
+
+- Resonate，[“确定性约束从何而来？”](https://journal.resonatehq.io/p/from-where-do-deterministic-constraints)
+- Restate，[“什么是持久执行？”](https://www.restate.dev/what-is-durable-execution)
+- Temporal，[OpenAI Agents SDK 集成](https://temporal.io/blog/announcing-openai-agents-sdk-integration)，[D 轮融资公告](https://temporal.io/news/temporal-raises-300M-to-make-agentic-ai-real-for-companies)，以及[E 轮融资公告](https://temporal.io/news/temporal-raises-550m-at-a-12-55b-valuation)
+- OpenAI，[Agents API 概述](https://developers.openai.com/api/docs/guides/agents-api/overview)
+- Anthropic，[Claude Platform 发布说明（Managed Agents）](https://platform.claude.com/docs/en/release-notes/overview)
+- Temporal，[从原型到生产就绪智能体 AI：Grid Dynamics 案例研究](https://temporal.io/blog/prototype-to-prod-ready-agentic-ai-grid-dynamics)
+- Google ADK，[Temporal 集成](https://adk.dev/integrations/temporal/)
+- LangChain，[LangGraph 中的持久执行](https://docs.langchain.com/oss/python/langgraph/durable-execution)
+- Diagrid，[“检查点不是持久执行”](https://www.diagrid.io/blog/checkpoints-are-not-durable-execution-why-langgraph-crewai-google-adk-and-others-fall-short-for-production-agent-workflows)
+
+---
+
+*下一篇：[循环工程](12-loop-engineering.md)*

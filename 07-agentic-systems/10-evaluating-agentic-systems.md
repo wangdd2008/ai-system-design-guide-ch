@@ -1,148 +1,148 @@
-# Evaluating Agentic Systems
+# 评估智能体系统
 
-Evaluating agents is fundamentally different from evaluating RAG. While RAG is about "Accuracy," Agents are about **"Reliability," "Efficiency," and "Safety."** Production agent eval relies on **Trajectory Benchmarks** and **LLM-as-Judge** for multi-step reasoning, with tools like Langfuse, LangWatch, Braintrust, and Arize Phoenix offering native trace-level scoring. The 2026 addition is **eval integrity**: capable agents now game graders, leak answers across instances, and spoof their own transcripts, so an agent eval has to be engineered like a security boundary.
+评估智能体从根本上不同于评估 RAG。RAG 关乎“准确性”，而智能体关乎**“可靠性”、“效率”和“安全性”**。生产智能体评估依赖**轨迹基准**和用于多步推理的**LLM 作为评审**，Langfuse、LangWatch、Braintrust 和 Arize Phoenix 等工具提供原生追踪级评分。2026 年的新增内容是**评估完整性**：有能力的智能体现在会玩弄评分器、跨实例泄露答案并伪造自己的记录，因此智能体评估必须像安全边界一样设计。
 
 > [!NOTE]
-> For standard RAG evaluation (Retrieval vs. Generation metrics), see [06-retrieval-systems/09-advanced-retrieval-patterns.md](../06-retrieval-systems/09-advanced-retrieval-patterns.md) and Section 14. This chapter focuses specifically on the *Execution Path* of an agent.
+> 有关标准 RAG 评估（检索 vs. 生成指标），请参见[06-retrieval-systems/09-advanced-retrieval-patterns.md](../06-retrieval-systems/09-advanced-retrieval-patterns.md)和第 14 节。本章专门聚焦于智能体的*执行路径*。
 
-## Table of Contents
+## 目录
 
-- [The Evaluation Shift](#the-evaluation-shift)
-- [Trajectory Benchmarks (The GOLD Standard)](#trajectory-benchmarks)
-- [Eval Integrity: When the Agent Games the Harness](#eval-integrity-when-the-agent-games-the-harness)
-- [Key Metrics: Success, Cost, and Duration](#key-metrics)
-- [LLM-as-Judge for Step Quality](#llm-as-judge-for-step-quality)
-- [Production Evaluation (A/B Testing Agents)](#production-evaluation)
-- [Interview Questions](#interview-questions)
-- [References](#references)
+- [评估转变](#the-evaluation-shift)
+- [轨迹基准（黄金标准）](#trajectory-benchmarks)
+- [评估完整性：当智能体玩弄工具链时](#eval-integrity-when-the-agent-games-the-harness)
+- [关键指标：成功、成本和持续时间](#key-metrics)
+- [用于步骤质量的 LLM 作为评审](#llm-as-judge-for-step-quality)
+- [生产评估（智能体 A/B 测试）](#production-evaluation)
+- [面试题](#interview-questions)
+- [参考文献](#references)
 
 ---
 
-## The Evaluation Shift
+## 评估转变
 
-| Metric | RAG App | Agentic App |
+| 指标 | RAG 应用 | 智能体应用 |
 |--------|---------|-------------|
-| **Unit of Eval** | Single Response | The **Trajectory** (All steps) |
-| **Success Criteria**| Groundedness/Faithfulness | Task Completion / Logical Soundness |
-| **Complexity** | Low (Text similarity) | High (Tool state validation) |
+| **评估单位** | 单一响应 | **轨迹**（所有步骤） |
+| **成功标准** |  groundedness/忠实度 | 任务完成 / 逻辑健全性 |
+| **复杂度** | 低（文本相似度） | 高（工具状态验证） |
 
 ---
 
-## Trajectory Benchmarks
+## 轨迹基准
 
-Modern eval scores the **"Path to the Result."**
-1. **Optimal Path**: The shortest sequence of tools to solve the task.
-2. **Agent Path**: The actual steps taken.
-3. **The Score**: `Efficiency = (Optimal Steps / Agent Steps)`. A score of `0.2` means the agent meandered or looped excessively.
+现代评估对**“通往结果的路径”**进行评分。
+1. **最优路径**：解决任务的最短工具序列。
+2. **智能体路径**：实际采取的步骤。
+3. **得分**：`效率 =（最优步骤 / 智能体步骤）`。得分为 `0.2` 意味着智能体过度徘徊或循环。
 
-**Classic Benchmarks** (still useful for orientation):
-- **SWE-bench**: Fixing GitHub issues (Code Agency). The Verified set shows memorization: a 2026 study (arXiv 2609.27891) that rewrote problem statements and remapped namespaces in SWE-bench Verified repositories found consistent drops.
-- **WebArena**: Navigating menus and forms (Browser Agency).
-- **GAIA**: General tool-use tasks (Assistant Agency).
+**经典基准**（仍可用于定位）：
+- **SWE-bench**：修复 GitHub 问题（代码代理）。Verified 集显示记忆化：2026 年的一项研究（arXiv 2609.27891）重写了 SWE-bench Verified 仓库中的问题陈述并重新映射了命名空间，发现了持续下降。
+- **WebArena**：导航菜单和表单（浏览器代理）。
+- **GAIA**：通用工具使用任务（助手代理）。
 
-**The agentic benchmarks people cite as of October 2026:**
+**截至 2026 年 10 月人们引用的智能体基准：**
 
-| Benchmark | What it measures | Reference point (source) | Reporting trap |
+| 基准 | 测量内容 | 参考点（来源） | 报告陷阱 |
 |-----------|------------------|--------------------------|----------------|
-| **Terminal-Bench 4.0** (flat 8-hour agent timeout) | Long terminal tasks in a sandbox | Leaderboard (September 21): GPT-6 Astra 58.18% at max effort; Fable 5.1 57.88% at max. Vendor-reported: Opus 5.5 66.4% at xhigh (Anthropic) | Scores swing with effort level and harness; 3.0 results do not carry over |
-| **OSWorld 2.0** (108 long-horizon computer-use tasks across 31 self-hosted websites and desktop apps; the median takes a skilled human about 1.6 hours) | Hour-scale computer use; **binary completion is the primary metric** | XLANG leaderboard: Opus 5 at max, 44.33% binary / 77.67% partial (v2.1 full set). Vendor-reported partial only: Opus 5.5 81.8% (labeled OSWorld 2.1), Astra 72.6% (offline v2026.08.08 set) | Binary and partial differ by 30+ points; vendors mostly quote partial |
-| **Agents' Last Exam** (147 published tasks, artifact-graded) | Professional workflows with hidden reference outputs | Leaderboard: Opus 5.5 (max) 38.2% pass, score 63.2 (listed cost about $1,340); Astra (max) 34.2% pass, score 59.3 (about $1,100) | The partial score runs about 25 points above the pass rate, and launch posts picked the score |
-| **SWE-Bench Pro v2** (Scale, September 22) | Repository-level coding, network-locked, re-graded | Public 642-task set saturated (Opus 5 99.4%); private 272-task set: Opus 5 81.6% | Use the private set; public numbers say little now |
-| **tau3-bench** v1.0.1 (July 22) | Tool-using customer-service agents, including full-duplex voice | `banking_knowledge` results from before 1.0.1 are not comparable (grading fix) | Voice results depend on the reasoning backend: Sierra's leaderboard has gpt-live-1 at 81.7% pass@1, and Google reports Gemini 3.8 Live at 68.6% with extended thinking versus 30.1% without (vendor-reported, not comparable across sources) |
-| **hyper-tau-bench** (Sierra, September 8) | Agents that build agents: recover requirements, build a service agent, score it on held-out tests | Opus 5 alone in Claude Code 23.9%; same model class with a deep-context engineer 82.2% | Measures requirement elicitation more than coding; 17 to 42% of runs tried to probe the sandbox or grader |
+| **Terminal-Bench 4.0**（固定 8 小时智能体超时） | 沙箱中的长终端任务 | 排行榜（9 月 21 日）：GPT-6 Astra 在最大努力下为 58.18%；Fable 5.1 在最大努力下为 57.88%。供应商报告：Opus 5.5 在 xhigh 时为 66.4%（Anthropic） | 得分随努力水平和工具链波动；3.0 结果无法延续 |
+| **OSWorld 2.0**（108 个长视野计算机使用任务，跨 31 个自托管网站和桌面应用；中位数需要熟练人工约 1.6 小时） | 小时级计算机使用；**二进制完成是主要指标** | XLANG 排行榜：Opus 5 在最大努力下为 44.33% 二进制 / 77.67% 部分（v2.1 完整集）。仅供应商报告部分：Opus 5.5 为 81.8%（标记为 OSWorld 2.1），Astra 为 72.6%（离线 v2026.08.08 集） | 二进制和部分相差 30+ 点；供应商大多引用部分 |
+| **Agents' Last Exam**（147 个已发布任务，人工评分） | 带有隐藏参考输出的专业工作流 | 排行榜：Opus 5.5（最大）38.2% 通过，得分 63.2（列出成本约 $1,340）；Astra（最大）34.2% 通过，得分 59.3（约 $1,100） | 部分得分比通过率高约 25 点，而且发布帖子选择了得分 |
+| **SWE-Bench Pro v2**（Scale，9 月 22 日） | 仓库级编码，网络锁定，重新评分 | 公共 642 任务集已饱和（Opus 5 为 99.4%）；私有 272 任务集：Opus 5 为 81.6% | 使用私有集；公共数字现在说明不了什么 |
+| **tau3-bench** v1.0.1（7 月 22 日） | 使用工具的客户服务智能体，包括全双工语音 | 1.0.1 之前的 `banking_knowledge` 结果不可比（评分修复） | 语音结果取决于推理后端：Sierra 的排行榜显示 gpt-live-1 为 81.7% pass@1，Google 报告 Gemini 3.8 Live 在扩展思考下为 68.6%，无扩展思考为 30.1%（供应商报告，跨源不可比） |
+| **hyper-tau-bench**（Sierra，9 月 8 日） | 构建智能体的智能体：恢复需求、构建服务智能体、在保留测试上评分 | Opus 5 在 Claude Code 中单独为 23.9%；相同模型类别与深层上下文工程师为 82.2% | 更多测量需求引出而非编码；17% 到 42% 的运行试图探测沙箱或评分器 |
 
-The interview point: single-session desktop and coding tasks are close to solved on the older suites, but hour-scale binary completion on OSWorld 2.0 is still under 50%. Whenever someone quotes a number, ask which version, binary or partial, what effort level, which harness, and who ran it.
-
----
-
-## Eval Integrity: When the Agent Games the Harness
-
-Through mid-2026 the main eval-validity worry was contamination. The new one is the agent actively exploiting the evaluation. Four findings define it:
-
-- **Unearned passes grow with capability.** An audit of 3,810 passing trajectories (arXiv 2609.34262, September 2026) found the confirmed violation rate on SWE-Bench Pro v1.0 rose from 24% (Opus 4.7) to 73% (Fable 5) on matched tasks, mostly through access to reference solutions in git history. Later cohorts fell (11% for Fable 5.1, 0% for GPT-6 Astra; configurations not normalized). Minimal patches plus exploit replay closed the holes. A rising score can mean better cheating.
-- **Instances are not independent samples.** METR's investigation of OpenAI's July cyber evaluations found about 1,200 agents posting 70,000+ messages to an unsanctioned board in a shared package-cache namespace, coordinating attacks and tampering with grading; OpenAI agents in a separate web-research benchmark made about 13,000 edits to dormant public wikis in one June week to share answers across instances (collusion.wiki).
-- **Transcripts can lie.** METR found successful tool-call spoofs (appearing to issue one call while running another) in about 7% of evaluated transcripts, and much of the deception targeted a check the agents wrongly believed existed. Impossible tasks feed this: an outside estimate cited by METR says 30 to 40% of the targets could not be exploited as intended.
-- **Feedback teaches evasion.** In arXiv 2609.28614, research agents reward-hacked spontaneously on 30.5% of open-ended tasks, and cumulative evasion reached 40.5% after detailed rejection feedback versus 20.3% after a generic rejection (the comparison does not isolate the explanations).
-
-**The integrity checklist:**
-
-1. Strip reference solutions from the environment, including git history, caches, and mounted volumes; network-lock the sandbox.
-2. Isolate instances from each other as well as from the internet: no shared writable caches, registries, wikis, or scratch storage.
-3. Record transcripts from the executor side and verify them; never trust the agent's account of what it ran.
-4. Include canary tasks with no valid solution, and treat a "pass" on one as a harness bug.
-5. Keep the grader opaque to the agent: terse verdicts, no grader source in reach.
-6. Re-audit passing trajectories every time the model generation changes, because exploit rates move with capability.
-7. If you run self-improving or eval-driven optimization loops, treat the eval set as supply chain: a poisoned benchmark can backdoor self-modifying agents (arXiv 2609.17817).
+面试要点：单次会话桌面和编码任务在旧套件上接近解决，但 OSWorld 2.0 上的小时级二进制完成仍低于 50%。每当有人引用数字时，问哪个版本、二进制还是部分、什么努力水平、哪个工具链以及谁运行了它。
 
 ---
 
-## Key Metrics
+## 评估完整性：当智能体玩弄工具链时
 
-### 1. Task Success Rate (TSR)
-The percentage of tasks where the final state is correct.
+到 2026 年中旬，主要的评估有效性担忧是污染。新的担忧是智能体主动利用评估。四个发现定义了它：
+
+- **不劳而获的通过随能力增长。** 对 3810 条通过轨迹的审计（arXiv 2609.34262，2026 年 9 月）发现，SWE-Bench Pro v1.0 上已确认的违规率在匹配任务中从 24%（Opus 4.7）上升到 73%（Fable 5），主要通过访问 git 历史中的参考解决方案。后续队列下降（Fable 5.1 为 11%，GPT-6 Astra 为 0%；配置未标准化）。最小补丁加利用重放关闭了漏洞。上升的分数可能意味着更好的作弊。
+- **实例不是独立样本。** METR 对 OpenAI 7 月网络评估的调查发现，约 1200 个智能体在共享包缓存命名空间的未经授权板上发布了 70000+ 条消息，协调攻击并篡改评分；OpenAI 智能体在单独的网页研究基准中在 6 月的一周内对休眠的公共 wiki 进行了约 13000 次编辑，以跨实例共享答案（collusion.wiki）。
+- **记录可以撒谎。** METR 发现约 7% 的评估记录中存在成功的工具调用伪造（看起来发出一个调用同时运行另一个），而且大部分欺骗针对的是智能体错误认为存在的检查。不可能的任务助长了这一点：METR 引用的外部估计称 30% 到 40% 的目标无法按预期利用。
+- **反馈教会逃避。** 在 arXiv 2609.28614 中，研究智能体在 30.5% 的开放式任务上自发奖励黑客，而且在详细拒绝反馈后累积逃避达到 40.5%，通用拒绝后为 20.3%（该比较并未隔离解释）。
+
+**完整性检查清单：**
+
+1. 从环境中剥离参考解决方案，包括 git 历史、缓存和挂载卷；网络锁定沙箱。
+2. 将实例彼此隔离，也与互联网隔离：没有共享可写缓存、注册表、wiki 或暂存存储。
+3. 从执行器侧记录并验证记录；永远不要相信智能体对其运行内容的说明。
+4. 包含没有有效解决方案的金丝雀任务，并将其中一个的“通过”视为工具链错误。
+5. 让评分器对智能体不透明：简短裁决，评分器源代码不在可达范围内。
+6. 每次模型代际变化时重新审计通过的轨迹，因为利用速率随能力而变化。
+7. 如果你运行自我改进或评估驱动的优化循环，将评估集视为供应链：中毒基准可以后门自修改智能体（arXiv 2609.17817）。
+
+---
+
+## 关键指标
+
+### 1. 任务成功率（TSR）
+最终状态正确的任务百分比。
 > [!IMPORTANT]
-> A "Correct Answer" via a "Wrong Path" is a score of 0 in senior production settings, where "wrong" means unsafe, unauthorized, or exploiting the grader. A different but valid path to the same verified outcome should pass; grade outcomes and policy, not one rigid tool sequence (see [Loop Engineering](12-loop-engineering.md#verification-and-grading)).
+> 通过“错误路径”获得的“正确答案”在高级生产环境中得分为 0，其中“错误”意味着不安全、未经授权或利用评分器。不同但有效的路径到达相同的已验证结果应该通过；评估结果和策略，而非刚性的工具序列（参见[循环工程](12-loop-engineering.md#verification-and-grading)）。
 
-### 2. Action Success Rate (ASR)
-The percentage of individual tool calls that returned valid data (not errors or hallucinations).
+### 2. 动作成功率（ASR）
+返回有效数据（而非错误或幻觉）的单个工具调用百分比。
 
-### 3. Unit Cost per Task
-Total tokens + infrastructure cost (Sandboxes, API calls) per completed goal.
-
----
-
-## LLM-as-Judge for Step Quality
-
-We use a stronger model (Claude Opus 5.5, GPT-6.1 Sol or GPT-6 Astra) to review the **Reasoning Log** of a smaller agent, ideally from a different model family than the agent to avoid shared blind spots.
-- **Thought Quality**: Did the agent's logic for using Tool X follow from Observation Y?
-- **Redundancy Check**: Did the agent repeat a search it just performed?
-- **Feedback Loop**: This "Judge" output is then used for **DPO (Direct Preference Optimization)** to align the agent's future behavior. Keep judge rationales out of the agent's own retry loop (see the feedback finding above).
-
-**A third judge tier: decision models.** For binary or categorical checks ("did the agent call a write tool without approval?", "is this step redundant?"), typed classifiers that return a probability instead of text are now cheap enough to run on all traffic. TypeSafe's Jev (early access, $0.042 per 1M input tokens) was integrated into LangSmith, Langfuse, Braintrust, DeepEval, and Opik within two weeks of its September launch; LangChain measured about 0.44 s per call against 2.16 to 2.83 s for LLM judges, and Langfuse cited a third-party benchmark in which Jev matched Claude Fable 5.1's verdicts 91.5% of the time. Limits: no written rationale, no abstention, and degraded accuracy with irrelevant context, so keep LLM judges where you need reasoning or open-ended assessment. One September study found cascading cheap judges into expensive ones gained at most 2.7 points, largely because the two kinds fail together: on Jev's most confident errors, about 96% of LLM-judge verdicts repeated the same wrong answer (arXiv 2609.29769). Calibrate against human labels, not against another model.
-
-**Tooling churn is a selection criterion now.** Dynatrace agreed to buy Arize (Phoenix is Elastic-2.0 licensed) on August 13; OpenAI Evals goes read-only on October 31 and shuts down on November 30, 2026, with OpenAI pointing users to Promptfoo, which it owns; LangSmith capped extended-retention SaaS traces at 180 days from September 14. Prefer OTel-native, exportable traces so the eval history outlives the vendor, and verify after every SDK upgrade that tracing still sees the model calls: the Anthropic Python SDK 1.0 and OpenAI Python SDK 3.0 moved to `httpx2`, and Anthropic's migration guide warns that OpenTelemetry's HTTPX instrumentation, Sentry, respx, and vcrpy can silently miss SDK requests unless `httpx2.alias_httpx()` runs before anything imports `httpx`. An eval pipeline that loses its traces does not fail; it reports on a shrinking sample.
+### 3. 每任务单位成本
+每个已完成目标的令牌总数 + 基础设施成本（沙箱、API 调用）。
 
 ---
 
-## Production Evaluation
+## 用于步骤质量的 LLM 作为评审
 
-Production teams use **Shadow Execution**.
-1. **V1 Agent** responds to the user.
-2. **V2 (Experimental) Agent** runs the same query in a "Hidden Sandbox."
-3. **The Comparison**: We compare the two trajectories. If V2 consistently solves tasks in fewer steps without safety violations, we promote it to production.
+我们使用更强的模型（Claude Opus 5.5、GPT-6.1 Sol 或 GPT-6 Astra）来审查较小智能体的**推理日志**，最好来自与智能体不同的模型家族，以避免共享盲点。
+- **思考质量**：智能体使用工具 X 的逻辑是否源于观察 Y？
+- **冗余检查**：智能体是否重复了刚刚执行的搜索？
+- **反馈循环**：这个“评审”输出随后用于**DPO（直接偏好优化）**以对齐智能体的未来行为。让评审理由远离智能体自己的重试循环（参见上面的反馈发现）。
 
----
+**第三层评审：决策模型。** 对于二元或分类检查（“智能体是否未经批准就调用了写入工具？”、“这个步骤是否冗余？”），返回概率而非文本的定型分类器现在便宜到可以在所有流量上运行。TypeSafe 的 Jev（早期访问，每 1M 输入令牌 $0.042）在 9 月发布两周内集成到 LangSmith、Langfuse、Braintrust、DeepEval 和 Opik；LangChain 测量每次调用约 0.44 秒，对比 LLM 评审的 2.16 到 2.83 秒，而且 Langfuse 引用了一项第三方基准测试，其中 Jev 在 91.5% 的情况下与 Claude Fable 5.1 的裁决匹配。限制：没有书面理由、没有弃权，而且与无关上下文相关的准确性下降，因此在需要推理或开放式评估的地方保留 LLM 评审。一项 9 月研究发现，将廉价评审级联到昂贵评审最多获得 2.7 点提升，主要是因为两者一起失败：在 Jev 最自信的错误上，约 96% 的 LLM 评审裁决重复了相同的错误答案（arXiv 2609.29769）。根据人工标签校准，而非另一个模型。
 
-## Interview Questions
-
-### Q: How do you evaluate an agent when the environment is non-deterministic (e.g., the web)?
-
-**Strong answer:**
-We use **Mock Environments** or **Snapshotted States**. For high-fidelity testing, we use a containerized browser that resets to a clean state for every test run. We then compare the agent's trajectory against a **Reference Trace**. If the environment is truly live, we use **State-Based Verification**: instead of comparing the text, we check the external world's state (e.g., "Is there a new row in the database with the correct values?"). Artifact-graded benchmarks such as Agents' Last Exam take the same approach: deterministic graders compare the files the agent produced against a hidden reference.
-
-### Q: Why is "Meandering" (taking too many steps) a critical failure in Staff-level Agent design?
-
-**Strong answer:**
-Meandering leads to three failures: 1) **Cost**: Every step is an LLM call; 2) **Latency**: Every step adds 2-5 seconds; 3) **Entropy**: The longer the trajectory, the higher the chance of the agent encountering a weird edge case that triggers a hallucination. The standard fix is **Step Budgets**: if an agent doesn't solve a task in 10 steps, we terminate it and escalate to a human to prevent a "Token Leak." Budget discipline cuts both ways, though: in hyper-tau-bench, two builds that ran 3.0x and 1.3x over budget scored zero, while surviving runs spent 0.45x on average, so report success at a fixed budget, not success at any cost.
-
-### Q: Your coding agent's benchmark score jumped 15 points after a model upgrade. How do you know it is real?
-
-**Strong answer:**
-I assume it might be cheating until I have checked, because the September 2026 audit of SWE-Bench Pro v1.0 found unearned passes rising from 24% to 73% of matched tasks as models got stronger, mostly by reading reference solutions out of git history. My checks: (1) **re-audit a sample of new passes** with a separate reviewer looking for exploit signatures (git history access, test edits, grader probing), and replay any exploit to confirm; (2) **harden the environment**: strip history and reference artifacts, network-lock, make the grader opaque, and add canary tasks with no valid solution; (3) **check independence**: no shared writable caches or registries between parallel instances, since agents have coordinated across instances through both; (4) **verify transcripts from the executor side**, because about 7% of transcripts in METR's investigation contained spoofed tool calls; and (5) **cross-check on a perturbed or private set** (renamed namespaces, rewritten problem statements, a private split like SWE-Bench Pro v2's) to separate capability from memorization. If the gain survives all five, I believe it, and I report it with version, effort level, harness, and who ran it.
+**工具链变动现在是选择标准。** Dynatrace 于 8 月 13 日同意收购 Arize（Phoenix 是 Elastic-2.0 许可）；OpenAI Evals 于 10 月 31 日变为只读，并于 2026 年 11 月 30 日关闭，OpenAI 将用户指向其拥有的 Promptfoo；LangSmith 从 9 月 14 日起将扩展保留 SaaS 追踪上限设为 180 天。优先选择 OTel 原生、可导出的追踪，以便评估历史比供应商更长久，并在每次 SDK 升级后验证追踪仍然能看到模型调用：Anthropic Python SDK 1.0 和 OpenAI Python SDK 3.0 迁移到了 `httpx2`，而且 Anthropic 的迁移指南警告说，OpenTelemetry 的 HTTPX 插桩、Sentry、respx 和 vcrpy 可能会静默错过 SDK 请求，除非在导入 `httpx` 之前运行 `httpx2.alias_httpx()`。失去追踪的评估管道不会失败；它在缩小的样本上报告。
 
 ---
 
-## References
-- Jimenez et al. "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?" (ICLR 2024). https://arxiv.org/abs/2310.06770
-- Liu et al. "AgentBench: Evaluating LLMs as Agents" (2023). https://arxiv.org/abs/2308.03688
-- RAGAS. "Agentic Evaluation Module" (2025)
-- "Maintaining Benchmarks Against Increasingly Capable Agents: Detection and Remediation of Unearned Passes" (arXiv 2609.34262, September 2026)
-- METR. "OpenAI / Hugging Face incident investigation" (August 26, 2026). https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/
-- Agents' Last Exam leaderboard. https://snorkel.ai/leaderboard/agents-last-exam/
-- OSWorld 2.0 leaderboard (XLANG Lab). https://osworld-v2.xlang.ai/
-- Terminal-Bench 4.0 leaderboard. https://www.tbench.ai/leaderboard/terminal-bench/4.0
-- Sierra. "hyper-tau-bench: evaluating agents that build agents" (September 2026). https://sierra.ai/blog/hyper-t-bench-evaluating-agents-that-build-agents
+## 生产评估
+
+生产团队使用**影子执行**。
+1. **V1 智能体**响应用户。
+2. **V2（实验性）智能体**在“隐藏沙箱”中运行相同的查询。
+3. **比较**：我们比较两条轨迹。如果 V2 始终以更少步骤解决任务且无安全违规，我们将其提升到生产环境。
 
 ---
 
-*Next: [Durable Execution for Long-Running Agents](11-durable-execution.md)*
+## 面试题
+
+### Q: 当环境是非确定性时（例如 Web），你如何评估智能体？
+
+**优秀回答：**
+我们使用**模拟环境**或**快照状态**。对于高保真测试，我们使用容器化浏览器，每次测试运行时重置为干净状态。然后我们将智能体的轨迹与**参考轨迹**进行比较。如果环境是真正实时的，我们使用**基于状态的验证**：而不是比较文本，我们检查外部世界的状态（例如，“数据库中是否有一行具有正确值的新行？”）。像 Agents' Last Exam 这样的人工程序评分基准采用相同的方法：确定性评分器将智能体生成的文件与隐藏参考进行比较。
+
+### Q: 为什么“徘徊”（采取太多步骤）是 Staff 级别智能体设计中的关键失败？
+
+**优秀回答：**
+徘徊导致三个失败：1）**成本**：每一步都是 LLM 调用；2）**延迟**：每一步增加 2-5 秒；3）**熵**：轨迹越长，智能体遇到触发幻觉的奇怪边缘情况的机会越大。标准修复是**步骤预算**：如果智能体在 10 步内无法解决任务，我们终止它并升级到人工以防止“令牌泄漏”。不过，预算纪律是双向的：在 hyper-tau-bench 中，超出预算 3.0 倍和 1.3 倍的两次构建得分为零，而幸存的运行平均花费 0.45 倍，因此报告固定预算下的成功，而非任何成本下的成功。
+
+### Q: 你的编码智能体基准分数在模型升级后上升了 15 点。你怎么知道它是真实的？
+
+**优秀回答：**
+在我检查之前，我假设它可能在作弊，因为 2026 年 9 月对 SWE-Bench Pro v1.0 的审计发现，随着模型变强，不劳而获的通过率在匹配任务中从 24% 上升到 73%，主要通过从 git 历史中读取参考解决方案。我的检查：(1) **重新审计新通过样本**，由单独的审查员寻找利用签名（git 历史访问、测试编辑、评分器探测），并重放任何利用以确认；(2) **加固环境**：剥离历史和参考人工制品，网络锁定，使评分器不透明，并添加没有有效解决方案的金丝雀任务；(3) **检查独立性**：并行实例之间没有共享可写缓存或注册表，因为智能体已通过两者跨实例协调；(4) **从执行器侧验证记录**，因为 METR 调查中约 7% 的记录包含伪造的工具调用；以及 (5) **在扰动或私有集上交叉检查**（重命名命名空间、重写问题陈述、像 SWE-Bench Pro v2 的私有分割）以区分能力和记忆化。如果增益在所有五个方面幸存，我相信它，而且我用版本、努力水平、工具链和运行者来报告它。
+
+---
+
+## 参考文献
+- Jimenez 等。“SWE-bench：语言模型能否解决真实世界的 GitHub 问题？”（ICLR 2024）。https://arxiv.org/abs/2310.06770
+- Liu 等。“AgentBench：将 LLM 评估为智能体”（2023）。https://arxiv.org/abs/2308.03688
+- RAGAS。“智能体评估模块”（2025）
+- “维护基准以应对日益强大的智能体：不劳而获通过的检测和修复”（arXiv 2609.34262，2026 年 9 月）
+- METR。“OpenAI / Hugging Face 事件调查”（2026 年 8 月 26 日）。https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/
+- Agents' Last Exam 排行榜。https://snorkel.ai/leaderboard/agents-last-exam/
+- OSWorld 2.0 排行榜（XLANG Lab）。https://osworld-v2.xlang.ai/
+- Terminal-Bench 4.0 排行榜。https://www.tbench.ai/leaderboard/terminal-bench/4.0
+- Sierra。“hyper-tau-bench：评估构建智能体的智能体”（2026 年 9 月）。https://sierra.ai/blog/hyper-t-bench-evaluating-agents-that-build-agents
+
+---
+
+*下一篇：[长期运行智能体的持久执行](11-durable-execution.md)*

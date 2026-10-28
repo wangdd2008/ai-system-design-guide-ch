@@ -1,133 +1,133 @@
-# Human-in-the-Loop Patterns
+# 人机协作模式
 
-No agent is 100% reliable. **Human-in-the-Loop (HITL)** is the bridge that ensures safety and accuracy in high-stakes environments. Production stacks have moved beyond "Approval Buttons" to **Co-Reasoning** and **Interrupt-Based Steering**, exposed natively in frameworks like LangGraph (interrupt+resume) and Microsoft Agent Framework. The bigger 2026 shift is **policy-gated autonomy**: a classifier or rule engine decides which actions run, which are denied, and which pause for a human, so people review the few calls that matter instead of clicking through all of them.
+没有智能体是 100% 可靠的。**人机协作（HITL）**是确保高价值环境中安全性和准确性的桥梁。生产栈已超越“审批按钮”，发展到**协同推理**和**基于中断的引导**，在 LangGraph（中断+恢复）和 Microsoft Agent Framework 等框架中原生暴露。2026 年更大的转变是**策略门控自治**：分类器或规则引擎决定哪些动作运行、哪些被拒绝、哪些暂停等待人工，因此人们只审查少数重要的调用，而非逐一查看所有调用。
 
-## Table of Contents
+## 目录
 
-- [The HITL Spectrum](#the-hitl-spectrum)
-- [Interrupts and Breakpoints](#interrupts-and-breakpoints)
-- [Policy-Gated Autonomy](#policy-gated-autonomy)
-- [Approval Laundering](#approval-laundering)
-- [Time-Travel Debugging (State Editing)](#time-travel-debugging-state-editing)
-- [Co-Reasoning (Shared Scratchpads)](#co-reasoning-shared-scratchpads)
-- [Confidence-Based Escalation](#confidence-based-escalation)
-- [Interview Questions](#interview-questions)
-- [References](#references)
+- [HITL 谱系](#the-hitl-spectrum)
+- [中断与断点](#interrupts-and-breakpoints)
+- [策略门控自治](#policy-gated-autonomy)
+- [审批洗白](#approval-laundering)
+- [时间旅行调试（状态编辑）](#time-travel-debugging-state-editing)
+- [协同推理（共享草稿本）](#co-reasoning-shared-scratchpads)
+- [基于置信度的升级](#confidence-based-escalation)
+- [面试题](#interview-questions)
+- [参考文献](#references)
 
 ---
 
-## The HITL Spectrum
+## HITL 谱系
 
-| Pattern | Agent Autonomy | Human Role | Best For |
+| 模式 | 智能体自主性 | 人工角色 | 最佳适用 |
 |---------|---------------|------------|----------|
-| **Human-in-command** | Low | Drives every step | High-risk Legal/Medical |
-| **Human-as-filter** | Medium | Approves/Edits final output | Content Generation |
-| **Human-as-backup** | High | Only intervenes on error | Customer Support |
-| **Human-on-the-loop** | Max | Audits logs after completion | High-volume analysis |
+| **人工指挥** | 低 | 驱动每一步 | 高风险法律/医疗 |
+| **人工过滤** | 中 | 审批/编辑最终输出 | 内容生成 |
+| **人工后备** | 高 | 仅在错误时干预 | 客户支持 |
+| **人工在环** | 最大 | 完成后审计日志 | 高容量分析 |
 
 ---
 
-## Interrupts and Breakpoints
+## 中断与断点
 
-Modern architectures (LangGraph, Microsoft Agent Framework) use **Deterministic Breakpoints**.
+现代架构（LangGraph、Microsoft Agent Framework）使用**确定性断点**。
 
-- **The Pattern**: The system is hardcoded to "Pause" before a specific sensitive tool is called (e.g., `execute_purchase` or `delete_user`).
-- **The Decision**: The environment waits for a user to send an `approve` or `reject` signal.
-- **State Preservation**: The agent's reasoning state is "Frozen" in the DB until the human acts. To survive restarts and deploys, hold the pause in a durable workflow (see [Durable Execution](11-durable-execution.md)); for approvals inside an MCP tool call, the stateless 2026-07-28 revision returns `input_required` and resumes on a client retry (see [Tool Use and MCP](03-tool-use-and-mcp.md#multi-round-trip-requests-mrtr)).
-- **Gate the action, not the turn**: models now emit several actions per turn (Claude's computer-use toolset runs a batch in order and halts at the first failure), so one model round trip can complete a multistep consequential action, and approving the batch as a whole means approving steps nobody looked at. Inspect every action in the batch on arrival and run the confirmation before each consequential action executes, including one in the middle of a batch; Anthropic's computer-use docs place the check before each block runs. A rejection ends the batch: answer the remaining actions as not executed so the model replans from a known state.
+- **模式**：系统在调用特定敏感工具之前（例如 `execute_purchase` 或 `delete_user`）硬编码为“暂停”。
+- **决策**：环境等待用户发送 `approve` 或 `reject` 信号。
+- **状态保留**：智能体的推理状态在数据库中“冻结”，直到人工行动。为了在重启和部署中存活，将暂停保持在持久工作流中（参见[持久执行](11-durable-execution.md)）；对于 MCP 工具调用内的审批，无状态 2026-07-28 修订版返回 `input_required` 并在客户端重试时恢复（参见[工具使用与 MCP](03-tool-use-and-mcp.md#multi-round-trip-requests-mrtr)）。
+- **门控动作，而非轮次**：模型现在每轮发出多个动作（Claude 的计算机使用工具集按顺序运行批次并在第一次失败时停止），因此一次模型往返可以完成多步结果性动作，而对整个批次进行审批意味着审批了没人看过的步骤。在到达时检查批次中的每个动作，并在每个结果性动作执行前运行确认，包括批次中间的一个；Anthropic 的计算机使用文档将检查放在每个块运行之前。拒绝结束批次：将剩余动作回答为未执行，以便模型从已知状态重新规划。
 
 ---
 
-## Policy-Gated Autonomy
+## 策略门控自治
 
-Per-action approval does not scale, and the evidence says humans are a weak filter when they do review: in Anthropic's blind study of 1,053 paid testers (cited when it made classifier-based auto mode the Claude Code default for Pro, Max, and Team plans on August 14, 2026), humans caught a swapped-in dangerous command 13.6% of the time, while the auto-mode classifier blocked 89%. Vendors have moved the default from "ask every time" to "policy decides, human sees the exceptions":
+按动作审批无法扩展，而且证据表明人工审查时是一个弱过滤器：在 Anthropic 对 1053 名付费测试者的盲研究中（2026 年 8 月 14 日将其作为基于分类器的自动模式设为 Claude Code 的 Pro、Max 和 Team 计划默认值的引用），人工仅在 13.6% 的情况下发现了被替换的危险命令，而自动模式分类器阻止了 89%。供应商已将默认设置从“每次都问”移到“策略决定，人工看例外”：
 
-| Product (2026) | How the gate works |
+| 产品（2026） | 门控如何工作 |
 |---|---|
-| **Claude Managed Agents** auto permission policy (September 10) | The server evaluates each agent or MCP tool call and runs it, denies it, or pauses for approval; the result appears in an `evaluation` field on events, and `ant beta:sessions connect` attaches a terminal to approve live |
-| **Claude Code** auto mode | Server-side classifier; since 2.1.284 (September 28) interactive sessions with no configured permission mode start in auto mode |
-| **OpenAI dots** (announced September 29) | Built-in rules plus Custom Rules (allow, block, or require approval per action); actions that could affect accounts or share information are auto-reviewed; when idle, a dot may only do read-only research |
-| **OpenAI Agents API** computer use (September 29) | Each new website origin needs an explicit `browser_origin_access` approval (enabling network access does not count); sign-in goes through a separate UI so credentials never enter model input |
-| **GitHub Copilot** computer use (public preview, October 1) | Approval per application, with reviewable and resettable permanent grants and an org-level kill switch |
+| **Claude Managed Agents** 自动权限策略（9 月 10 日） | 服务器评估每个智能体或 MCP 工具调用并运行、拒绝或暂停审批；结果出现在事件的 `evaluation` 字段中，`ant beta:sessions connect` 附加终端实时审批 |
+| **Claude Code** 自动模式 | 服务器端分类器；自 2.1.284 版（9 月 28 日）起，未配置权限模式的交互式会话以自动模式启动 |
+| **OpenAI dots**（9 月 29 日宣布） | 内置规则加自定义规则（按动作允许、阻止或要求审批）；可能影响账户或共享信息的动作自动审查；空闲时，一个点可能只做只读研究 |
+| **OpenAI Agents API** 计算机使用（9 月 29 日） | 每个新网站来源需要显式的 `browser_origin_access` 审批（启用网络访问不算）；登录通过单独 UI 进行，因此凭证永远不会进入模型输入 |
+| **GitHub Copilot** 计算机使用（公开预览，10 月 1 日） | 按应用审批，带有可审查和可重置的永久授权以及组织级终止开关 |
 
-A related primitive is the **decision model**: a model that scores a fixed set of answers instead of generating text, which is exactly what a gate needs. OpenAI's Decisions API (limited preview, September 29) uses a Luna model to classify inputs, route requests, or choose an agent action; Cloudflare's Clef (October 1, Apache 2.0) returns probabilities over predefined answers so a system can act or defer, at 209 ms median on a Qwen3.8-27B base and 39 ms for Clef-flash. Cloudflare's framing that humans no longer need to be in the loop is a vendor claim; the defensible use is as the cheap first gate in front of a human.
+相关的原语是**决策模型**：对固定答案集进行评分的模型，而不是生成文本，这正是门控所需。OpenAI 的 Decisions API（有限预览，9 月 29 日）使用 Luna 模型分类输入、路由请求或选择智能体动作；Cloudflare 的 Clef（10 月 1 日，Apache 2.0）返回预定义答案的概率，以便系统可以行动或延迟，在 Qwen3.8-27B 基础上中位数 209 毫秒，Clef-flash 为 39 毫秒。Cloudflare 的说法是人工不再需要在环，这是供应商的说法；可辩护的用途是作为人工面前的廉价第一门控。
 
-**An AI approval can now satisfy a human gate.** Since September 1, 2026, Copilot code review can submit approvals that count toward a repository's required-approvals rule (public preview, off by default, scoped by file path, and dismissed on new commits like a human approval). When an agent wrote the change, letting another model's approval satisfy branch protection turns a two-person rule into a zero-person rule. Keep at least one human approval on paths that touch auth, payments, infrastructure, and the agent's own configuration, and allow the AI approval only where a wrong merge is cheap to revert.
+**AI 审批现在可以满足人工门控。** 自 2026 年 9 月 1 日起，Copilot 代码审查可以提交计入仓库所需审批规则的审批（公开预览，默认关闭，按文件路径限定范围，并在新提交时像人工审批一样被驳回）。当智能体编写了更改时，让另一个模型的审批满足分支保护将两人规则变成了零人规则。在涉及认证、支付、基础设施和智能体自身配置的路径上至少保留一个人工审批，并且仅在错误合并易于撤销的地方允许 AI 审批。
 
-**The caveat to say out loud:** a permission classifier is a convenience layer, not containment. When Johann Rehberger showed an auto-mode bypass in August 2026 (a "confused environment" chain that succeeded in 3 or 4 of 5 small-sample runs), Anthropic's response, per his report, was that auto mode is "a convenience feature backed by a best-effort classifier, not a security guarantee" and that the real boundary is OS isolation and network egress control. Pair every policy gate with the sandboxing in [Agentic Security](09-agentic-security-and-sandboxing.md).
-
----
-
-## Approval Laundering
-
-The approval a human gives is only as good as the binding between what they saw and what runs. A September 2026 paper (arXiv 2609.38983) defines **approval laundering**: the action a coding-agent harness executes differs from the action the human approved. It names six classes (scope, argument, temporal, tool, delegation, and semantic) and measured them at Claude Code's `PreToolUse` approval point. A cryptographic approval token, checked by paired replay of 118 runs, eliminated delegation laundering and the paper's seeded temporal case, but by design left scope laundering untouched and did not significantly reduce argument laundering, because those diverge one process level below what a field-level verifier can observe.
-
-What to build:
-
-- **Bind approval to the exact canonical action** (tool, arguments, target, session) with a hash or signed token, and re-verify at execution time.
-- **Show the human the executed form**, not the model's description of it.
-- **Expire approvals** quickly and scope them to one session and one agent identity, so they cannot be replayed by a subagent.
-- **Keep the sandbox.** Even signed approvals leave gaps, so approval reduces risk; it does not replace isolation.
+**需要大声说出的警告：** 权限分类器是便利层，不是收容。当 Johann Rehberger 在 2026 年 8 月展示自动模式绕过（“混乱环境”链，在 5 次小样本运行中成功 3 或 4 次）时，Anthropic 的回应（根据他的报告）是自动模式是“由尽力而为分类器支持的便利功能，不是安全保证”，而且真正的边界是操作系统隔离和网络出口控制。每个策略门控都应与[智能体安全](09-agentic-security-and-sandboxing.md)中的沙箱配对。
 
 ---
 
-## Time-Travel Debugging (State Editing)
+## 审批洗白
 
-Standard agents are "One-way." If they make a mistake in Step 3, the session is usually ruined.
-- **Innovation**: **State Injection**. A human reviewer can "Go back" to the state at Step 3, edit the agent's observation or thought, and then "Resume" execution.
-- **Impact**: It allows humans to "Steer" the agent off a bad path without starting from zero.
-- **Edit observations and plans, not thinking.** On the newest Claude models, thinking blocks are bound to the model and conversation that produced them, and a request whose prior thinking no longer matches its prefix can be rejected. Rewind to the checkpoint, edit the observation or the written plan, and drop any thinking produced after the edit point rather than rewriting it.
+人工给出的审批仅与其所看到的内容和实际运行的内容之间的绑定一样好。2026 年 9 月的一篇论文（arXiv 2609.38983）定义了**审批洗白**：编码智能体工具执行的动与人审批的动作不同。它命名了六个类别（范围、参数、时间、工具、委托和语义），并在 Claude Code 的 `PreToolUse` 审批点测量了它们。通过 118 次运行的配对重放检查的加密审批令牌消除了委托洗白和论文的种子时间案例，但设计上保留了范围洗白未受影响，并且没有显著减少参数洗白，因为它们在一个进程级别以下的地方偏离了字段级验证器可以观察到的范围。
 
----
+需要构建的内容：
 
-## Co-Reasoning (Shared Scratchpads)
-
-Instead of the human being a "Judge," they become a **"Partner."**
-- The agent shows its **Scratchpad** (Internal Thinking) to the human.
-- Characterized as: *"I am planning to use Tool A because of Fact B. Does that seem right to you?"*
-- **Benefit**: Catching reasoning errors *before* they translate into actions.
-- **Share a plan, not raw thinking.** Frontier APIs no longer hand back raw chain-of-thought: OpenAI returns reasoning summaries, and on the newest Claude models thinking blocks arrive empty at the default `display: "omitted"` unless you opt into a display mode that returns text. Have the agent write an explicit plan and rationale for the human to review, and treat it as the agent's account of its reasoning, not a transcript of it.
-- **Put the plan where the team already works.** Asana's agents (described September 29, 2026) post their research plan and the steps they took into the shared task, so any reviewer can comment and steer mid-run, while only admins and editors can commit that feedback to the agent's permanent shared memory.
+- **将审批绑定到确切的规范动作**（工具、参数、目标、会话），使用哈希或签名令牌，并在执行时重新验证。
+- **向人工展示执行形式**，而非模型的描述。
+- **快速过期审批**并将它们限定在一个会话和一个智能体身份，因此它们无法被子智能体重放。
+- **保留沙箱。** 即使签名审批也存在差距，因此审批降低风险；它不能替代隔离。
 
 ---
 
-## Confidence-Based Escalation
+## 时间旅行调试（状态编辑）
 
-We calculate an **Uncertainty Score** for each consequential step.
-
-- If the score exceeds a threshold, the agent **Automatically Pauses** and sends a notification to a human operator.
-- **Where the score comes from has changed.** Token logprobs are disappearing from frontier APIs (GPT-6 Astra exposes no logprobs, temperature, or top_p), and verbalized confidence is poorly calibrated. The current pattern is a separate, calibrated scorer: a decision model or classifier that returns a probability over a fixed set of outcomes (proceed, ask, escalate), with a defer threshold tuned on labeled cases.
-- **Example**: An agent trying to resolve a complex billing dispute realizes the user's intent is ambiguous. It stops and says: *"I'm not 100% sure how to handle this specific refund case. One moment while I get a human expert to look at this."*
-- **Escalations are product data.** Anthropic's inbound-sales agent on Claude Managed Agents (described September 30, 2026) ends each conversation in checkout, a quick answer, or a hand-off to a rep with the full conversation *and an explanation of why*. Anthropic reports (vendor figures) more than twice the lead-to-opportunity rate, deals closing about five days faster, and the share of conversations needing a human roughly halved. The "why" field is what makes the escalation queue a feedback loop rather than a dumping ground.
+标准智能体是“单向的”。如果它们在步骤 3 出错，会话通常就毁了。
+- **创新**：**状态注入**。人工审查者可以“回到”步骤 3 的状态，编辑智能体的观察或想法，然后“恢复”执行。
+- **影响**：它允许人工将智能体从错误路径上“引导”下来，而无需从零开始。
+- **编辑观察和计划，而非思考。** 在最新的 Claude 模型上，思考块被绑定到产生它们的模型和会话，而且先前思考不再匹配其前缀的请求可能被拒绝。回退到检查点，编辑观察或书面计划，并删除编辑点之后产生的任何思考，而不是重写它。
 
 ---
 
-## Interview Questions
+## 协同推理（共享草稿本）
 
-### Q: How do you design an HITL system that doesn't "Fatigue" the human operator?
-
-**Strong answer:**
-We use **Threshold Tuning**. We don't ask for approval on every action. We only trigger HITL for: 1) High-risk "Writing" tools, 2) Low-confidence reasoning steps, or 3) Actions that violate a "Policy" set by the business. Additionally, we provide the human with a **Contextual Summary**: instead of the whole log, we show them a 1-sentence "Diff" of what the agent wants to do, generated from the canonical action rather than the model's description of it. This reduces the "Review cognitive load" from minutes to seconds. In 2026 the bigger lever is moving the routine decisions to a policy gate (Claude Managed Agents' auto permission policy, OpenAI dots' Custom Rules) so humans only see the exceptions.
-
-### Q: What is the "Over-Reliance" risk in HITL, and how do you mitigate it?
-
-**Strong answer:**
-Over-reliance happens when humans start clicking "Approve" without reading the logs. It is measurable: in Anthropic's blind study, human reviewers caught a swapped-in dangerous command only 13.6% of the time. We mitigate this with **Forced Review Checkpoints** (e.g., the human MUST edit at least one word in the proposed plan) or **Synthetic Error Injections** (intentionally showing the human a "wrong" plan 1% of the time to see if they catch it). If they pass the "Trap," they continue; if they fail, they are flagged for additional training. Because human catch rates are this low, I do not let approval be the only control on an irreversible action: it sits on top of a sandbox and a policy gate.
-
-### Q: You gate agent actions with a classifier that can run, deny, or defer to a human. How do you set and monitor the defer threshold?
-
-**Strong answer:**
-I treat it as a calibrated decision problem with asymmetric costs. Offline, I label a few hundred real actions with the decision a careful reviewer would make, check calibration (does 0.9 mean right 90% of the time?), and pick the threshold where the expected cost of a wrong auto-approve, weighted by blast radius, equals the cost of a human review. The threshold differs by action class: read-only actions get a permissive threshold, writes a strict one, and irreversible or external-facing actions always defer regardless of score. Online, I monitor four signals: defer rate (a sudden rise means drift or an attack), human override rate on deferred items (if humans approve 99% of deferrals, the threshold is too tight and reviewers will stop reading), sampled audits of auto-approved actions (the only way to see false approvals), and latency added by the gate. I re-calibrate on every model or prompt change, because a new agent model shifts the action distribution under the classifier. And I never present the classifier as the security boundary; Anthropic has described its own auto-mode classifier as a best-effort convenience layer, not a security guarantee.
+人工不再是“裁判”，而是成为**“伙伴”**。
+- 智能体向人工展示其**草稿本**（内部思考）。
+- 特征为：*“我因为事实 B 而计划使用工具 A。你觉得对吗？”*
+- **好处**：在推理错误转化为动作之前捕捉它们。
+- **分享计划，而非原始思考。** 前沿 API 不再返回原始思维链：OpenAI 返回推理摘要，而且在最新的 Claude 模型上，思考块以默认 `display: "omitted"` 空到达，除非你选择返回文本的显示模式。让智能体为人工审查编写显式的计划和理由，并将其视为智能体对其推理的说明，而非逐字记录。
+- **将计划放在团队已经在工作的地方。** Asana 的智能体（2026 年 9 月 29 日描述）将研究计划和采取的步骤发布到共享任务中，因此任何审查者都可以中途评论和引导，而只有管理员和编辑可以将反馈提交到智能体的永久共享记忆中。
 
 ---
 
-## References
-- LangChain. "Human-in-the-loop in LangGraph" (2024/2025)
-- Wang, Y. Approval laundering in coding-agent harnesses, arXiv 2609.38983 (September 2026). https://arxiv.org/abs/2609.38983
-- Claude Platform release notes (Managed Agents auto permission policy, September 10, 2026). https://platform.claude.com/docs/en/release-notes/overview
-- Rehberger, J. "Breaking Claude Code Opus 5 Auto Mode" (Embrace The Red, August 2026). https://embracethered.com/blog/posts/2026/breaking-claude-code-opus-5-and-automode/
-- Anthropic. "How Anthropic's sales team rebuilt inbound with Claude Managed Agents" (September 2026). https://claude.com/blog/how-anthropics-sales-team-rebuilt-inbound-with-claude-managed-agents
+## 基于置信度的升级
+
+我们为每个结果性步骤计算**不确定性评分**。
+
+- 如果评分超过阈值，智能体**自动暂停**并向人工操作员发送通知。
+- **评分的来源已经改变。** 令牌 logprobs 正在从前沿 API 中消失（GPT-6 Astra 不暴露 logprobs、temperature 或 top_p），而且口头表达的置信度校准很差。当前的模式是单独的校准评分器：返回固定结果集（继续、询问、升级）概率的决策模型或分类器，带有在标注案例上调优的延迟阈值。
+- **示例**：一个试图解决复杂账单争议的智能体意识到用户意图模糊。它停下来并说：*“我不确定如何处理这个特定的退款案例。稍等，我请人工专家来看一下。”*
+- **升级是产品数据。** Anthropic 在 Claude Managed Agents 上的入站销售智能体（2026 年 9 月 30 日描述）以结账、快速回答或移交代表结束每次对话，附带完整对话*以及原因解释*。Anthropic 报告（供应商数据）潜在客户到机会的转化率提高了一倍以上，交易完成速度约快五天，需要人工的对话比例大致减半。“原因”字段使升级队列成为反馈循环而非倾倒场。
 
 ---
 
-*Next: [Agentic Security and Sandboxing](09-agentic-security-and-sandboxing.md)*
+## 面试题
+
+### Q: 如何设计一个不会让“人工操作员疲劳”的 HITL 系统？
+
+**优秀回答：**
+我们使用**阈值调优**。我们不要求每个动作都审批。我们仅在以下情况触发 HITL：1）高风险的“写入”工具，2）低置信度推理步骤，或 3）违反业务设定的“策略”的动作。此外，我们为人工提供**上下文摘要**：而不是整个日志，我们向他们展示智能体想要做什么的一句话“差异”，从规范动作生成，而非模型的描述。这将“审查认知负荷”从分钟缩短到秒。2026 年更大的杠杆是将常规决策移到策略门控（Claude Managed Agents 的自动权限策略、OpenAI dots 的自定义规则），因此人工只看例外。
+
+### Q: HITL 中的“过度依赖”风险是什么，如何缓解？
+
+**优秀回答：**
+过度依赖发生在人工开始不阅读日志就点击“批准”时。它是可衡量的：在 Anthropic 的盲研究中，人工审查员仅在 13.6% 的情况下发现了被替换的危险命令。我们通过**强制审查检查点**（例如，人工必须在提议计划中至少编辑一个词）或**合成错误注入**（故意在 1% 的情况下向人工展示“错误”计划以查看他们是否发现）来缓解这一点。如果他们通过“陷阱”，就继续；如果失败，他们被标记为需要额外培训。由于人工捕获率如此低，我不会让审批成为不可逆动作的唯一控制：它位于沙箱和策略门控之上。
+
+### Q: 你用分类器门控智能体动作，它可以运行、拒绝或延迟到人工。你如何设置和监控延迟阈值？
+
+**优秀回答：**
+我将其视为具有不对称成本的校准决策问题。离线时，我用谨慎审查者会做出的决策标注几百个真实动作，检查校准（0.9 是否意味着 90% 的时间正确？），并选择错误自动审批的期望成本（按爆炸半径加权）等于人工审查成本的阈值。阈值因动作类别而异：只读动作获得宽松阈值，写入动作获得严格阈值，不可逆或面向外部的动作无论评分如何始终延迟。在线时，我监控四个信号：延迟率（突然上升意味着漂移或攻击）、延迟项目上的人工推翻率（如果人工批准了 99% 的延迟，阈值太紧，审查员会停止阅读）、自动批准动作的抽样审计（查看错误批准的唯一方法）以及门控增加的延迟。我在每次模型或提示更改时重新校准，因为新的智能体模型会改变分类器下的动作分布。而且我永远不会将分类器呈现为安全边界；Anthropic 已将其自己的自动模式分类器描述为尽力而为的便利层，而非安全保证。
+
+---
+
+## 参考文献
+- LangChain。“LangGraph 中的人机协作”（2024/2025）
+- Wang, Y. 编码智能体工具中的审批洗白，arXiv 2609.38983（2026 年 9 月）。https://arxiv.org/abs/2609.38983
+- Claude Platform 发布说明（Managed Agents 自动权限策略，2026 年 9 月 10 日）。https://platform.claude.com/docs/en/release-notes/overview
+- Rehberger, J. “打破 Claude Code Opus 5 自动模式”（Embrace The Red，2026 年 8 月）。https://embracethered.com/blog/posts/2026/breaking-claude-code-opus-5-and-automode/
+- Anthropic。“Anthropic 销售团队如何用 Claude Managed Agents 重建入站”（2026 年 9 月）。https://claude.com/blog/how-anthropics-sales-team-rebuilt-inbound-with-claude-managed-agents
+
+---
+
+*下一篇：[智能体安全与沙箱](09-agentic-security-and-sandboxing.md)*
